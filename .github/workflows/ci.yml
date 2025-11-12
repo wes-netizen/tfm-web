@@ -17,5 +17,37 @@ jobs:
       - run: npm run build
       - run: npm run lint
 
+name: CI
 
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+
+      - name: Build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          DEV_ORIGIN: http://localhost:3000
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
 
