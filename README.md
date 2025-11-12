@@ -1,3 +1,6 @@
+# Today’s Future Me
+
+[![CI](https://github.com/wesisraelsson/tfm-web/actions/workflows/ci.yml/badge.svg)](https://github.com/wesisraelsson/tfm-web/actions/workflows/ci.yml)
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/pages/api-reference/create-next-app).
 
 ## Getting Started
