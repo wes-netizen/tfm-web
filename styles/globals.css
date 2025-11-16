@@ -1,13 +1,24 @@
+/* ---------- Color tokens ---------- */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg-main: #020617;        /* slate-950 */
+  --bg-panel: #020617;       /* base panel */
+  --bg-card: #020617;
+  --border-subtle: #1f2937;  /* slate-800 */
+  --text-main: #e5e7eb;      /* slate-200 */
+  --text-muted: #9ca3af;     /* slate-400 */
+  --accent: #059669;         /* emerald-500 */
+  --accent-soft: #065f46;    /* emerald-700 */
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ---------- Base reset ---------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 html,
@@ -17,17 +28,13 @@ body {
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+  background-color: var(--bg-main);
+  color: var(--text-main);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-* {
-  box-sizing: border-box;
-  padding: 0;
-  margin: 0;
 }
 
 a {
@@ -35,8 +42,364 @@ a {
   text-decoration: none;
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
+button {
+  font-family: inherit;
+}
+
+/* ---------- Layout ---------- */
+
+header {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 1rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at top left, #0f172a, #020617 60%);
+}
+
+/* content band inside header – logo/title left, date right */
+.header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.header-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+}
+
+.header-right small {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+header h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+header p {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+main {
+  padding: 1.5rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* Sections on /today and similar pages */
+
+section {
+  background-color: rgba(15, 23, 42, 0.8); /* slate-900 with opacity */
+  border-radius: 0.75rem;
+  border: 1px solid var(--border-subtle);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+/* ---------- Form controls ---------- */
+
+textarea,
+input[type="text"],
+select {
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-subtle);
+  background-color: #020617;
+  color: var(--text-main);
+  font-size: 0.875rem;
+  padding: 0.5rem 0.625rem;
+  outline: none;
+}
+
+textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+textarea:focus,
+input[type="text"]:focus,
+select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(5, 150, 105, 0.4);
+}
+
+/* ---------- Text styles ---------- */
+
+h2 {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+small,
+.helper-text {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+/* ---------- Buttons ---------- */
+
+button.primary {
+  background-color: var(--accent);
+  color: white;
+  border-radius: 0.375rem;
+  border: none;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background-color: transparent;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border-subtle);
+  padding: 0.4rem 0.9rem;
+  font-size: 0.75rem;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+/* Bible toggle "on" state */
+
+button.toggle.on {
+  border-color: var(--accent);
+  background-color: rgba(5, 150, 105, 0.15);
+}
+
+/* Align buttons */
+
+.button-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+/* ---------- Error banner ---------- */
+
+.error-banner {
+  background-color: rgba(127, 29, 29, 0.4);
+  border-color: rgba(248, 113, 113, 0.6);
+  font-size: 0.8rem;
+}
+
+/* ---------- How to use box ---------- */
+
+.how-to-box h2 {
+  margin-bottom: 0.35rem;
+}
+
+/* ---------- Entry cards (BLOCKING / FOCUS / BUILDING / WIN) ---------- */
+
+.entry-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+@media (min-width: 900px) {
+  .entry-grid {
+    grid-template-columns: repeat(4, 1fr);
   }
+}
+
+.entry-card {
+  background-color: rgba(15, 23, 42, 0.9);
+  border-radius: 0.75rem;
+  border: 1px solid var(--border-subtle);
+  padding: 0.75rem;
+  cursor: pointer;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease,
+    border-color 0.12s ease;
+}
+
+/* hide textarea until active; JS adds .active on click */
+
+.entry-card textarea {
+  display: none;
+  margin-top: 0.75rem;
+}
+
+.entry-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  border-color: var(--accent);
+}
+
+.entry-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(5, 150, 105, 0.5);
+}
+
+.entry-card.active textarea {
+  display: block;
+}
+
+/* ---------- Lists for CSC / Grateful / Action / Prayer ---------- */
+
+.output-card {
+  background-color: rgba(15, 23, 42, 0.9);
+  border-radius: 0.75rem;
+  border: 1px solid var(--border-subtle);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.output-card h3 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+/* we render choice buttons inside, so no bullet marker */
+
+.output-card ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+.output-card li::before {
+  content: "";
+}
+
+/* selectable boxes inside output-card */
+
+.choices-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.choice-item {
+  width: 100%;
+  text-align: left;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-main);
+  padding: 0.45rem 0.6rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.choice-item:hover {
+  border-color: var(--accent);
+  background-color: rgba(5, 150, 105, 0.08);
+}
+
+.choice-item[data-selected="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(5, 150, 105, 0.4);
+  background-color: rgba(5, 150, 105, 0.16);
+}
+
+/* Coach paragraph block */
+
+.coach-block {
+  background-color: rgba(15, 23, 42, 0.9);
+  border-radius: 0.75rem;
+  border: 1px solid var(--border-subtle);
+  padding: 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+/* Quote / verse block */
+
+.quote-block {
+  background-color: rgba(6, 95, 70, 0.25);
+  border-radius: 0.75rem;
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  padding: 0.9rem 1rem;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.quote-block em {
+  color: #a7f3d0;
+}
+
+.quote-block span.ref {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* ---------- Loading overlay with spinning logo ---------- */
+
+.tfm-loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at top, #020617 0, #020617 40%, #000 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+
+.tfm-loading-logo {
+  width: 96px;
+  height: 96px;
+  border-radius: 999px;
+  animation: tfm-spin 1.2s linear infinite;
+}
+
+@keyframes tfm-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Modal card for Today’s Future Me Entry ---------- */
+
+.entry-modal-card {
+  background-color: rgba(15, 23, 42, 0.96);
+  border-radius: 0.9rem;
+  border: 1px solid var(--border-subtle);
+  padding: 1.5rem 1.75rem 1.25rem;
+  width: 100%;
+  max-width: 640px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);
+}
+
+/* small logo inside the modal */
+
+.entry-modal-logo {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  display: block;
+  margin: 0 auto 0.6rem;
 }

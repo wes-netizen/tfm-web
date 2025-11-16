@@ -1,1060 +1,961 @@
-// /pages/teleprompter.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import dynamic from "next/dynamic";
-/** ---- Web Speech API shims (avoid TS globals) ---- */
-type SpeechRecognitionEvent = any;
-type SpeechRecognition = any;
+// pages/teleprompter.tsx
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
+import Image from "next/image";
+import { useRouter } from "next/router";
 
-type RecorderState = "idle" | "countdown" | "recording" | "paused" | "finishing";
+/* ========= Visual tokens ========= */
+const baseText = "#EAF2F8";
+const faint = "rgba(255,255,255,.70)";
+const border = "rgba(255,255,255,.20)";
+const panel = "rgba(15,23,42,.88)";
+const teal = "#22C55E";
+const accent = "#C7D2FE";
+const bg = "radial-gradient(circle at top, #1f2937 0, #020617 55%, #000 100%)";
 
-const FALLBACK_SCRIPT =
-  `Paste your Daily Prompt here, or click "Open in Teleprompter" from the Today page.`;
+/* ========= Types ========= */
+type RecState = "idle" | "recording" | "paused" | "finished";
 
-function TeleprompterPageInner() {
-  /* ---------------- State: script + autostart ---------------- */
-  const [script, setScript] = useState(FALLBACK_SCRIPT);
-  const [autoStart, setAutoStart] = useState(false);
-  const [autoFs, setAutoFs] = useState(false);
-  const RecognitionCtor =
-    typeof window !== "undefined"
-      ? (window.SpeechRecognition ?? (window as any).webkitSpeechRecognition ?? null)
-      : null;
+type TeleSettings = {
+  wpm: number; // 80–150, default 105
+  fontSize: number;
+  lineHeight: number;
+  mirror: boolean;
+  autoStart: boolean;
+};
 
-  const recognition = RecognitionCtor ? new (RecognitionCtor as any)() : null; // kept to satisfy TS, not used directly
+/* ========= Helpers ========= */
+const isBrowser = typeof window !== "undefined";
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const url = new URL(window.location.href);
-    const qs = url.searchParams;
-    const qScript = qs.get("script");
-    const qAutostart = qs.get("autostart");
-    const qFs = qs.get("fs");
-    if (qScript && qScript.trim()) setScript(decodeURIComponent(qScript));
-    else {
-      const stored = localStorage.getItem("tp_script_v1");
-      if (stored?.trim()) setScript(stored);
-    }
-    setAutoStart(qAutostart === "1" || qAutostart === "true");
-    setAutoFs(qFs === "1" || qFs === "true");
-  }, []);
+const DEFAULT_SCRIPT =
+  "Today, I choose to create my future with intention.\n" +
+  "I give myself permission to be honest about what is blocking me.\n" +
+  "I speak with courage, clarity, and compassion—first to myself, then to others.\n" +
+  "Every word I say here is a seed for Today’s Future Me.";
 
-  /* ---------------- UI prefs ---------------- */
-  // Default WPM slowed to 40
-  const [wpm, setWpm] = useState(105);
-  const [fontSize, setFontSize] = useState<number | "fit">("fit"); // auto-fit on phones
-  const [lineHeight, setLineHeight] = useState(1.25);
-  const [mirror, setMirror] = useState(false);
-  const [pipPct, setPipPct] = useState(18); // webcam size %
-  const [cameraOffset, setCameraOffset] = useState(0); // -40..40, vertical PiP offset
-  const [showHud, setShowHud] = useState(true); // overlay HUD
-  const [drawerOpen, setDrawerOpen] = useState(false); // control drawer
+function countWords(s: string): number {
+  const m = s.match(/\b[\w’'-]+\b/gi);
+  return m ? m.length : 0;
+}
 
-  /* ---------------- Media/device state ---------------- */
-  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const [camId, setCamId] = useState("");
-  const [micId, setMicId] = useState("");
-  const [permError, setPermError] = useState("");
+/** Build line meta so we can highlight by line while timing by words */
+function buildLineMeta(script: string) {
+  const rawLines = script
+    .split(/\r?\n/)
+    .map((l) => l.trimEnd())
+    .filter((l) => l.length > 0);
 
-  const cams = devices.filter((d) => d.kind === "videoinput");
-  const mics = devices.filter((d) => d.kind === "audioinput");
+  if (!rawLines.length) {
+    return {
+      lines: [""],
+      wordsPerLine: [1],
+      totalWords: 1,
+      cumulativeWords: [1],
+    };
+  }
 
-  /* ---------------- Refs ---------------- */
-  const stageRef = useRef<HTMLDivElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const wordsPerLine: number[] = [];
+  let totalWords = 0;
+  const cumulativeWords: number[] = [];
+
+  for (const line of rawLines) {
+    const w = Math.max(1, countWords(line));
+    totalWords += w;
+    wordsPerLine.push(w);
+    cumulativeWords.push(totalWords);
+  }
+
+  return {
+    lines: rawLines,
+    wordsPerLine,
+    totalWords,
+    cumulativeWords,
+  };
+}
+
+function findCurrentLineIndex(
+  elapsedMs: number,
+  wpm: number,
+  cumulativeWords: number[]
+): number {
+  if (!cumulativeWords.length || wpm <= 0) return 0;
+  const wordsPerMs = wpm / 60000;
+  const wordsSpoken = elapsedMs * wordsPerMs;
+
+  let idx = 0;
+  while (idx < cumulativeWords.length && cumulativeWords[idx] <= wordsSpoken) {
+    idx++;
+  }
+  return Math.min(idx, cumulativeWords.length - 1);
+}
+
+/* ========= CSS tokens ========= */
+const hudLabel: CSSProperties = {
+  fontSize: 12,
+  textTransform: "uppercase",
+  letterSpacing: 1,
+  color: faint,
+};
+
+const sliderStyle: CSSProperties = {
+  width: "100%",
+};
+
+/* ========= Inner component (browser only) ========= */
+function TeleprompterInner() {
+  const router = useRouter();
+
+  const [script, setScript] = useState(DEFAULT_SCRIPT);
+  const [settings, setSettings] = useState<TeleSettings>({
+    wpm: 105,
+    fontSize: 32,
+    lineHeight: 1.4,
+    mirror: false,
+    autoStart: false,
+  });
+
+  const [recState, setRecState] = useState<RecState>("idle");
+  const [camId, setCamId] = useState<string | null>(null);
+  const [micId, setMicId] = useState<string | null>(null);
+
+  const [downloadUrl, setDownloadUrl] = useState<string>("");
+  const [tcError, setTcError] = useState<string>("");
+
+  // DOM refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const camStreamRef = useRef<MediaStream | null>(null);
-  const micStreamRef = useRef<MediaStream | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rafRef = useRef<number | null>(null);
 
+  // recording refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedBlobsRef = useRef<Blob[]>([]);
   const recordedBlobRef = useRef<Blob | null>(null);
-  const rafRef = useRef<number | null>(null);
 
   const startTsRef = useRef<number>(0);
-  const pausedAtRef = useRef<number>(0);
-  const durationRef = useRef<number>(0);
-  const wordsRef = useRef<number>(0);
-  const scrollRef = useRef<number>(0);
+  const pauseOffsetRef = useRef<number>(0);
+  const lastPauseStartRef = useRef<number | null>(null);
 
-  // These are still present for future speech-driven mode but not used for line-by-line timing now
-  const recogRef = useRef<any>(null);
-  const spokenCountRef = useRef<number>(0);
-  const lastSpeechTsRef = useRef<number>(0);
+  // Precomputed line meta
+  const lineMeta = useMemo(() => buildLineMeta(script), [script]);
 
-  const [recState, setRecState] = useState<RecorderState>("idle");
-  const [downloadUrl, setDownloadUrl] = useState("");
-  const [mp4Url, setMp4Url] = useState("");
-  const [transcoding, setTranscoding] = useState(false);
-  const [tcError, setTcError] = useState("");
-
-  // Wake lock (keep screen on)
-  const wakeLockRef = useRef<any>(null);
-
-  // Remote control
-  const bcRef = useRef<BroadcastChannel | null>(null);
-
-  /* ---------------- Tokenize with line breaks preserved ---------------- */
-  const tokens = useMemo(() => {
-    const s = (script || "").replace(/\r/g, "");
-    const rows = s.split("\n");
-    const arr: { t: string; isBreak: boolean }[] = [];
-    rows.forEach((row, i) => {
-      if (!row.trim()) arr.push({ t: "\n", isBreak: true });
-      else {
-        const parts = row.match(/\S+|\s+/g) || [];
-        parts.forEach((p) => arr.push({ t: p, isBreak: false }));
-      }
-      if (i < rows.length - 1) arr.push({ t: "\n", isBreak: true });
-    });
-    return arr;
-  }, [script]);
-
-  /* ---------------- Duration from WPM ---------------- */
+  /* ========= Devices ========= */
   useEffect(() => {
-    const totalWords = (script.match(/\b[\w’'-]+\b/gi) || []).length;
-    wordsRef.current = Math.max(1, totalWords);
-    // Allow very slow reading (down to ~20 WPM)
-    durationRef.current = (wordsRef.current / Math.max(20, wpm)) * 60_000;
-  }, [script, wpm]);
+    if (!isBrowser) return;
 
-  /* ---------------- Device discovery ---------------- */
-  useEffect(() => {
-    if (typeof navigator === "undefined") return;
-    (async () => {
-      try {
-        const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        tmp.getTracks().forEach((t) => t.stop());
-        const list = await navigator.mediaDevices.enumerateDevices();
-        setDevices(list);
-        if (!camId) setCamId(list.find((d) => d.kind === "videoinput")?.deviceId || "");
-        if (!micId) setMicId(list.find((d) => d.kind === "audioinput")?.deviceId || "");
-      } catch {
-        setPermError("Camera/Microphone permission is required to record.");
-      }
-    })();
+    navigator.mediaDevices
+      ?.enumerateDevices()
+      .then((devs) => {
+        const cams = devs.filter((d) => d.kind === "videoinput");
+        const mics = devs.filter((d) => d.kind === "audioinput");
+        if (cams[0]) setCamId(cams[0].deviceId);
+        if (mics[0]) setMicId(mics[0].deviceId);
+      })
+      .catch(() => {
+        // ignore
+      });
   }, []);
 
-  useEffect(() => {
-    if (typeof window === "undefined" || !("BroadcastChannel" in window)) return;
-    const bc = new BroadcastChannel("tp_remote_v1");
-    bcRef.current = bc;
-    bc.onmessage = (e) => {
-      const m = e.data || {};
-      if (m.type === "start") handleStart();
-      if (m.type === "pauseResume") handlePauseResume();
-      if (m.type === "finish") handleFinish();
-      if (m.type === "speed")
-        setWpm((v) => Math.max(20, Math.min(260, m.value || v)));
-      if (m.type === "font")
-        setFontSize((v) => {
-          const n = Math.max(
-            28,
-            Math.min(96, m.value || (typeof v === "number" ? v : 48))
-          );
-          return n;
-        });
-      if (m.type === "mirror") setMirror(!!m.value);
-      if (m.type === "pip")
-        setPipPct((v) => Math.max(10, Math.min(35, m.value || v)));
+  /* ========= Camera attach ========= */
+  const attachCamera = useCallback(async () => {
+    if (!isBrowser || !videoRef.current) return;
+
+    const constraints: MediaStreamConstraints = {
+      video: camId ? { deviceId: { exact: camId } } : true,
+      audio: false,
     };
-    return () => bc.close();
-  }, []);
 
-  /* ---------------- Fullscreen helpers ---------------- */
-  async function goFullscreen() {
-    if (!stageRef.current || typeof document === "undefined") return;
-    try {
-      await stageRef.current.requestFullscreen?.();
-      if ("orientation" in screen && (screen.orientation as any)?.lock) {
-        try {
-          await (screen.orientation as any).lock("landscape");
-        } catch {}
-      }
-      if ("wakeLock" in navigator && (navigator as any).wakeLock?.request) {
-        try {
-          wakeLockRef.current = await (navigator as any).wakeLock.request("screen");
-        } catch {}
-      }
-    } catch {}
-  }
-  async function exitFullscreen() {
-    try {
-      await document.exitFullscreen?.();
-    } catch {}
-    try {
-      await (screen.orientation as any)?.unlock?.();
-    } catch {}
-    try {
-      wakeLockRef.current?.release?.();
-    } catch {}
-  }
-
-  /* ---------------- Canvas sizing: FULL SCREEN ---------------- */
-  function resizeCanvasToViewport() {
-    const cvs = canvasRef.current!;
-    const dpr = Math.min(2, window.devicePixelRatio || 1); // cap to keep performance
-    const W = Math.floor(window.innerWidth * dpr);
-    const H = Math.floor(window.innerHeight * dpr);
-    if (cvs.width !== W || cvs.height !== H) {
-      cvs.width = W;
-      cvs.height = H;
-    }
-  }
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const onResize = () => resizeCanvasToViewport();
-    window.addEventListener("resize", onResize);
-    resizeCanvasToViewport();
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  /* ---------------- Camera preview for PIP ---------------- */
-  useEffect(() => {
-    (async () => {
-      if (!camId || typeof navigator === "undefined") return;
-      try {
-        camStreamRef.current?.getTracks().forEach((t) => t.stop());
-        const cam = await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: camId ? { exact: camId } : undefined },
-          audio: false,
-        });
-        camStreamRef.current = cam;
-        if (videoRef.current) {
-          videoRef.current.srcObject = cam;
-          await videoRef.current.play();
-        }
-      } catch {
-        setPermError("Unable to access selected camera.");
-      }
-    })();
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoRef.current.srcObject = stream;
+    await videoRef.current.play();
   }, [camId]);
 
-  /* ---------------- Word layout + drawing (LINE-BY-LINE) ---------------- */
-function layoutAndDraw(now: number) {
-  const canvas = canvasRef.current!;
-  const ctx = canvas.getContext("2d")!;
-  const W = canvas.width;
-  const H = canvas.height;
+  useEffect(() => {
+    if (!isBrowser) return;
+    attachCamera().catch(() => {});
+  }, [attachCamera]);
 
-  const marginX = Math.round(W * 0.08);
-  const usableW = W - marginX * 2;
+  /* ========= Drawing loop ========= */
+  const drawFrame = useCallback(() => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
 
-  // auto-fit font on phones if set to "fit"
-  const basePx =
-    typeof fontSize === "number"
-      ? fontSize
-      : Math.max(36, Math.min(80, Math.round(W * 0.045)));
-  const pxLine = Math.round(basePx * lineHeight);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
-  ctx.save();
-  ctx.clearRect(0, 0, W, H);
-  if (mirror) {
-    ctx.translate(W, 0);
-    ctx.scale(-1, 1);
-  }
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    let elapsed = 0;
 
-  ctx.fillStyle = "#000";
-  ctx.globalAlpha = 0.92;
-  ctx.fillRect(0, 0, W, H);
-  ctx.globalAlpha = 1;
-
-  ctx.font = `700 ${basePx}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`;
-  ctx.textBaseline = "alphabetic";
-
-  // wrap into lines, keeping token identity
-  type Chunk = { text: string; isWord: boolean };
-  const lines: Chunk[][] = [];
-  let current: Chunk[] = [];
-  let x = 0;
-  for (const tk of tokens) {
-    if (tk.isBreak) {
-      lines.push(current.length ? current : [{ text: "", isWord: false }]);
-      current = [];
-      x = 0;
-      continue;
-    }
-    const w = tk.t;
-    const width = ctx.measureText(w).width;
-    if (x + width > usableW) {
-      lines.push(current.length ? current : [{ text: "", isWord: false }]);
-      current = [];
-      x = 0;
-    }
-    current.push({ text: w, isWord: /\S/.test(w) });
-    x += width;
-  }
-  if (current.length) lines.push(current);
-
-  const totalLines = Math.max(1, lines.length);
-  const elapsed = Math.max(
-    0,
-    performance.now() - (startTsRef.current || performance.now())
-  );
-
-  // Each line gets an equal slice of the total duration
-  const lineDurationMs =
-    totalLines > 0 && durationRef.current > 0
-      ? durationRef.current / totalLines
-      : 1;
-
-  let currentLine = Math.floor(elapsed / lineDurationMs);
-  if (currentLine >= totalLines) currentLine = totalLines - 1;
-
-  // Scroll so the highlighted line sits a bit above center
-  const targetScroll = Math.max(0, currentLine * pxLine - H * 0.35);
-  scrollRef.current = targetScroll;
-
-  const startLine = Math.max(0, Math.floor(targetScroll / pxLine) - 2);
-  const endLine = Math.min(
-    lines.length - 1,
-    Math.ceil((targetScroll + H) / pxLine) + 2
-  );
-
-  for (let li = startLine; li <= endLine; li++) {
-    const y = Math.round(li * pxLine - targetScroll + H / 2);
-
-    const isCurrentLine = li === currentLine;
-    const lineAlpha = isCurrentLine ? 1 : 0.7; // same for all non-highlight lines
-
-    let cx = marginX;
-    for (const ch of lines[li]) {
-      ctx.globalAlpha = lineAlpha;
-      // Highlighted line = blue, all others = uniform gray
-      ctx.fillStyle = isCurrentLine ? "#c7d2fe" : "#cccccc";
-      ctx.fillText(ch.text, cx, y);
-      cx += ctx.measureText(ch.text).width;
-    }
-  }
-
-  ctx.globalAlpha = 1;
-  ctx.restore();
-
-  // Webcam PIP (bottom-right) with vertical offset cropping
-  if (videoRef.current?.readyState === 4) {
-    const pipW = Math.round(W * (pipPct / 100));
-    const pipH = Math.round((pipW * 9) / 16);
-    const x2 = W - pipW - Math.round(W * 0.015);
-    const y2 = H - pipH - Math.round(W * 0.015);
-
-    const vid = videoRef.current;
-    const vW = vid.videoWidth || 1280;
-    const vH = vid.videoHeight || 720;
-
-    // Crop window allows shifting up/down by ~15% of video height
-    const cropH = vH * 0.7;
-    const baseY = (vH - cropH) / 2;
-    const offsetNorm = Math.max(-1, Math.min(1, cameraOffset / 40)); // -1..1
-    const maxShift = vH * 0.15;
-    let srcY = baseY + offsetNorm * maxShift;
-    if (srcY < 0) srcY = 0;
-    if (srcY + cropH > vH) srcY = vH - cropH;
-
-    ctx.drawImage(vid, 0, srcY, vW, cropH, x2, y2, pipW, pipH);
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x2, y2, pipW, pipH);
-  }
-
-  rafRef.current = requestAnimationFrame(layoutAndDraw);
-}
-
-  /* ---------------- Recording ---------------- */
-  async function startRecording() {
-    if (typeof navigator === "undefined") return;
-
-    // Mic
-    try {
-      micStreamRef.current?.getTracks().forEach((t) => t.stop());
-      const mic = await navigator.mediaDevices.getUserMedia({
-        audio: micId ? { deviceId: { exact: micId } } : true,
-        video: false,
-      });
-      micStreamRef.current = mic;
-    } catch {
-      setPermError("Unable to access selected microphone.");
-      throw new Error("Mic error");
+    if (recState === "recording") {
+      if (startTsRef.current === 0) startTsRef.current = now;
+      elapsed = now - startTsRef.current - pauseOffsetRef.current;
+    } else if (recState === "paused" && startTsRef.current !== 0) {
+      if (lastPauseStartRef.current === null) {
+        lastPauseStartRef.current = now;
+      }
+      elapsed = lastPauseStartRef.current - startTsRef.current - pauseOffsetRef.current;
+    } else if (recState === "finished") {
+      elapsed = (lineMeta.totalWords / settings.wpm) * 60000;
+    } else {
+      elapsed = 0;
     }
 
-    // Canvas stream
-    const canvas = canvasRef.current!;
-    const canvasStream = canvas.captureStream(30);
+    const { lines, cumulativeWords } = lineMeta;
+    const currentLineIndex = findCurrentLineIndex(
+      elapsed,
+      settings.wpm,
+      cumulativeWords
+    );
 
-    const mixed = new MediaStream([
-      ...canvasStream.getVideoTracks(),
-      ...(micStreamRef.current?.getAudioTracks() ?? []),
-    ]);
+    // Canvas size
+    const width = canvas.clientWidth || 800;
+    const height = canvas.clientHeight || 600;
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
 
-    recordedBlobsRef.current = [];
-    recordedBlobRef.current = null;
+    // Background
+    ctx.save();
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, width, height);
 
-    const mr = new MediaRecorder(mixed, {
-      mimeType: "video/webm;codecs=vp9,opus",
-      videoBitsPerSecond: 4_000_000,
-      audioBitsPerSecond: 128_000,
-    });
-    mr.ondataavailable = (e) => {
-      if (e.data?.size) recordedBlobsRef.current.push(e.data);
+    // Camera PIP
+    const pipWidth = Math.floor(width * 0.28);
+    const pipHeight = Math.floor(height * 0.35);
+    const pipX = width - pipWidth - 24;
+    const pipY = 24;
+
+    if (video.readyState >= 2) {
+      ctx.save();
+      ctx.beginPath();
+      const radius = 18;
+      ctx.moveTo(pipX + radius, pipY);
+      ctx.lineTo(pipX + pipWidth - radius, pipY);
+      ctx.quadraticCurveTo(
+        pipX + pipWidth,
+        pipY,
+        pipX + pipWidth,
+        pipY + radius
+      );
+      ctx.lineTo(pipX + pipWidth, pipY + pipHeight - radius);
+      ctx.quadraticCurveTo(
+        pipX + pipWidth,
+        pipY + pipHeight,
+        pipX + pipWidth - radius,
+        pipY + pipHeight
+      );
+      ctx.lineTo(pipX + radius, pipY + pipHeight);
+      ctx.quadraticCurveTo(
+        pipX,
+        pipY + pipHeight,
+        pipX,
+        pipY + pipHeight - radius
+      );
+      ctx.lineTo(pipX, pipY + radius);
+      ctx.quadraticCurveTo(pipX, pipY, pipX + radius, pipY);
+      ctx.closePath();
+      ctx.clip();
+
+      ctx.drawImage(video, pipX, pipY, pipWidth, pipHeight);
+      ctx.restore();
+
+      ctx.strokeStyle = "rgba(148,163,184,.9)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(pipX, pipY, pipWidth, pipHeight);
+    }
+
+    // Teleprompter text
+    const margin = 40;
+    const textWidth = width - margin * 2 - pipWidth * 0.3;
+    const fontSize = settings.fontSize;
+    const lineGap = fontSize * settings.lineHeight;
+
+    ctx.font = `${fontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    ctx.textBaseline = "top";
+
+    const centerY = height / 2;
+    const startY = centerY - currentLineIndex * lineGap - lineGap / 2;
+
+    for (let i = 0; i < lines.length; i++) {
+      const y = startY + i * lineGap;
+      if (y < margin - lineGap || y > height - margin + lineGap) continue;
+
+      const text = lines[i];
+      const x = margin;
+
+      if (i === currentLineIndex) {
+        ctx.fillStyle = accent;
+        ctx.globalAlpha = 0.18;
+        ctx.fillRect(
+          margin - 16,
+          y - 6,
+          textWidth + 32,
+          lineGap + 12
+        );
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = accent;
+      } else {
+        ctx.fillStyle = baseText;
+      }
+
+      ctx.fillText(text, x, y);
+    }
+
+    ctx.restore();
+
+    rafRef.current = requestAnimationFrame(drawFrame);
+  }, [lineMeta, recState, settings.wpm, settings.fontSize, settings.lineHeight]);
+
+  useEffect(() => {
+    if (!isBrowser) return;
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(drawFrame);
+    return () => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
-    mr.onstop = () => {
-      const blob = new Blob(recordedBlobsRef.current, { type: "video/webm" });
-      recordedBlobRef.current = blob;
-      const url = URL.createObjectURL(blob);
+  }, [drawFrame]);
+
+  /* ========= Recording ========= */
+  const stopMediaRecorder = useCallback(() => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+    }
+  }, []);
+
+  const stopTracks = useCallback(() => {
+    if (!isBrowser) return;
+    const v = videoRef.current;
+    if (v && v.srcObject instanceof MediaStream) {
+      v.srcObject.getTracks().forEach((t) => t.stop());
+      v.srcObject = null;
+    }
+  }, []);
+
+  const handleStart = useCallback(async () => {
+    if (!isBrowser || recState === "recording") return;
+    setTcError("");
+
+    try {
       setDownloadUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
-        return url;
+        return "";
       });
-    };
-    mediaRecorderRef.current = mr;
-    mr.start();
 
-    // (Speech recognition is wired but no longer drives highlighting in line-by-line mode)
-    spokenCountRef.current = 0;
-    lastSpeechTsRef.current = performance.now();
-    if (typeof window !== "undefined" && "webkitSpeechRecognition" in window) {
-      const SR = (window as any).webkitSpeechRecognition as any;
-      const r = new SR();
-      r.continuous = true;
-      r.interimResults = true;
-      r.lang = "en-US";
-      r.onresult = (ev: any) => {
-        let text = "";
-        for (let i = ev.resultIndex; i < ev.results.length; i++) {
-          text += ev.results[i][0].transcript + " ";
-        }
-        const cnt = (text.match(/\b[\w’'-]+\b/gi) || []).length;
-        spokenCountRef.current += cnt;
-        lastSpeechTsRef.current = performance.now();
+      recordedBlobsRef.current = [];
+      recordedBlobRef.current = null;
+      startTsRef.current = 0;
+      pauseOffsetRef.current = 0;
+      lastPauseStartRef.current = null;
+
+      const canvas = canvasRef.current;
+      if (!canvas) throw new Error("Canvas not ready");
+
+      const displayStream = canvas.captureStream(30);
+
+      const audioConstraints: MediaStreamConstraints = {
+        audio: micId ? { deviceId: { exact: micId } } : true,
+        video: false,
       };
-      r.onerror = () => {};
-      r.onend = () => {};
-      r.start();
-      recogRef.current = r;
-    } else {
-      recogRef.current = null;
-    }
+      const audioStream = await navigator.mediaDevices.getUserMedia(
+        audioConstraints
+      );
 
-    // Render loop
-    startTsRef.current = performance.now();
-    pausedAtRef.current = 0;
-    rafRef.current = requestAnimationFrame(layoutAndDraw);
-  }
+      const fullStream = new MediaStream();
+      displayStream.getVideoTracks().forEach((t) => fullStream.addTrack(t));
+      audioStream.getAudioTracks().forEach((t) => fullStream.addTrack(t));
 
-  function stopRecording() {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = null;
-    recogRef.current?.stop();
-    recogRef.current = null;
-    mediaRecorderRef.current?.stop();
-    mediaRecorderRef.current = null;
-  }
+      const options: MediaRecorderOptions = {
+        mimeType: "video/webm;codecs=vp9,opus",
+      };
+      const mr = new MediaRecorder(fullStream, options);
 
-  async function handleStart() {
-    if (recState !== "idle") return;
-    setDownloadUrl((p) => {
-      if (p) URL.revokeObjectURL(p);
-      return "";
-    });
-    setMp4Url((p) => {
-      if (p) URL.revokeObjectURL(p);
-      return "";
-    });
-    setTcError("");
-    setPermError("");
+      mr.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedBlobsRef.current.push(event.data);
+        }
+      };
 
-    resizeCanvasToViewport();
-    if (autoFs || /Mobi|Android/i.test(navigator.userAgent)) {
-      await goFullscreen();
-    }
-    setShowHud(false); // stage first
-    setRecState("countdown");
-    for (let i = 3; i > 0; i--) await new Promise((r) => setTimeout(r, 1000));
-    setRecState("recording");
-    await startRecording();
-  }
+      mr.onstop = () => {
+        fullStream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(recordedBlobsRef.current, {
+          type: "video/webm",
+        });
+        recordedBlobRef.current = blob;
+        const url = URL.createObjectURL(blob);
+        setDownloadUrl(url);
+        setRecState("finished");
+      };
 
-  function handlePauseResume() {
-    if (recState === "recording") {
-      setRecState("paused");
-      pausedAtRef.current = performance.now() - startTsRef.current;
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      mediaRecorderRef.current?.pause();
-      recogRef.current?.stop();
-    } else if (recState === "paused") {
+      mr.start(250);
+      mediaRecorderRef.current = mr;
       setRecState("recording");
-      startTsRef.current = performance.now() - pausedAtRef.current;
-      rafRef.current = requestAnimationFrame(layoutAndDraw);
-      // restart speech (still optional)
-      if (typeof window !== "undefined" && "webkitSpeechRecognition" in window) {
-        const SR = (window as any).webkitSpeechRecognition as { new (): SpeechRecognition };
-        const r = new SR();
-        r.continuous = true;
-        r.interimResults = true;
-        r.lang = "en-US";
-        r.onresult = (ev: SpeechRecognitionEvent) => {
-          let text = "";
-          for (let i = ev.resultIndex; i < ev.results.length; i++)
-            text += ev.results[i][0].transcript + " ";
-          const cnt = (text.match(/\b[\w’'-]+\b/gi) || []).length;
-          spokenCountRef.current += cnt;
-          lastSpeechTsRef.current = performance.now();
-        };
-        r.start();
-        recogRef.current = r;
+    } catch (e: any) {
+      setTcError(e?.message || "Unable to start recording");
+      stopTracks();
+      stopMediaRecorder();
+      setRecState("idle");
+    }
+  }, [micId, recState, stopMediaRecorder, stopTracks]);
+
+  const handlePauseResume = useCallback(() => {
+    if (!isBrowser) return;
+    if (!mediaRecorderRef.current) return;
+
+    if (recState === "recording") {
+      mediaRecorderRef.current.pause();
+      setRecState("paused");
+      lastPauseStartRef.current =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+    } else if (recState === "paused") {
+      mediaRecorderRef.current.resume();
+      setRecState("recording");
+      if (lastPauseStartRef.current != null) {
+        const now =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        pauseOffsetRef.current += now - lastPauseStartRef.current;
+        lastPauseStartRef.current = null;
       }
     }
-  }
+  }, [recState]);
 
-  async function handleFinish() {
-    setRecState("finishing");
-    stopRecording();
-    await exitFullscreen();
-    setShowHud(true);
-    setTimeout(() => setRecState("idle"), 300);
-  }
+  const handleStop = useCallback(() => {
+    if (!isBrowser) return;
+    if (!mediaRecorderRef.current) return;
+    stopMediaRecorder();
+  }, [stopMediaRecorder]);
 
-  async function convertToMp4() {
-    try {
-      if (!recordedBlobRef.current) return;
-      setTranscoding(true);
-      setTcError("");
-
-      const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-      const ffmpeg = new FFmpeg();
-      await ffmpeg.load();
-
-      // Write input and transcode
-      if (!recordedBlobRef.current) throw new Error("No recording found");
-      const arrayBuf = await (recordedBlobRef.current as Blob).arrayBuffer();
-      const input = new Uint8Array(arrayBuf); // make it a Uint8Array
-      await ffmpeg.writeFile("in.webm", input);
-
-      await ffmpeg.exec([
-        "-i",
-        "in.webm",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-movflags",
-        "+faststart",
-        "-b:a",
-        "128k",
-        "out.mp4",
-      ]);
-
-      // Read output and convert to Blob (avoid SharedArrayBuffer issues)
-      const out = (await ffmpeg.readFile("out.mp4")) as Uint8Array;
-      const safe = new Uint8Array(out);
-      const blob = new Blob([safe.buffer], { type: "video/mp4" });
-
-      const url = URL.createObjectURL(blob);
-      setMp4Url((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return url;
-      });
-    } catch (e: any) {
-      setTcError(e?.message ?? String(e));
-    } finally {
-      setTranscoding(false);
-    }
-  }
-
-  function handleNewSession() {
-    // Clear download URLs and revoke any existing blobs
+  const handleResetRecording = useCallback(() => {
     setDownloadUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return "";
     });
-    setMp4Url((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return "";
-    });
     setTcError("");
 
     recordedBlobsRef.current = [];
     recordedBlobRef.current = null;
 
-    // Reset timing for the next recording
-    spokenCountRef.current = 0;
-    lastSpeechTsRef.current = 0;
     startTsRef.current = 0;
-    durationRef.current = 0;
+    pauseOffsetRef.current = 0;
+    lastPauseStartRef.current = null;
 
-    // Keep script so you can reuse/edit, just reset recording state
     setRecState("idle");
-  }
+  }, []);
 
-  /* ---------------- Autostart ---------------- */
+  /* ========= Auto-start ========= */
   useEffect(() => {
-    if (!autoStart) return;
+    if (!settings.autoStart) return;
+    if (recState !== "idle") return;
     const id = setTimeout(() => {
-      if (recState === "idle") handleStart();
-    }, 600);
+      handleStart();
+    }, 700);
     return () => clearTimeout(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStart, camId, micId]);
+  }, [settings.autoStart, recState, handleStart]);
 
-  /* ---------------- Render ---------------- */
+  /* ========= UI ========= */
   const isRecording = recState === "recording";
   const isPaused = recState === "paused";
-  const stageTap = () => setShowHud((s) => !s);
+
+  const handleChangeSettings = <K extends keyof TeleSettings>(
+    key: K,
+    value: TeleSettings[K]
+  ) => {
+    setSettings((prev) => ({ ...prev, [key]: value }));
+  };
 
   return (
     <main
       style={{
-        height: "100dvh",
-        width: "100vw",
-        margin: 0,
-        padding: 0,
-        fontFamily: "system-ui",
-        overflowX: "hidden", // help tablets
+        minHeight: "100vh",
+        background: bg,
+        color: baseText,
+        padding: "12px 16px 24px",
+        boxSizing: "border-box",
       }}
     >
-      {/* STAGE (full viewport) */}
-      <div
-        ref={stageRef}
-        onClick={isRecording || isPaused ? stageTap : undefined}
+      <style jsx global>{`
+        body {
+          margin: 0;
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+            sans-serif;
+        }
+        .tele-grid {
+          display: grid;
+          grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.1fr);
+          gap: 16px;
+        }
+        @media (max-width: 900px) {
+          .tele-grid {
+            grid-template-columns: minmax(0, 1fr);
+          }
+        }
+      `}</style>
+
+      <header
         style={{
-          position: "fixed",
-          inset: 0,
-          background: "#000",
-          touchAction: "manipulation",
-          WebkitTapHighlightColor: "transparent",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: 12,
         }}
       >
-        <canvas
-          ref={canvasRef}
-          style={{ width: "100vw", height: "100dvh", display: "block" }}
+        <Image
+          src="/tfm_logo.png"
+          alt="TFM"
+          width={36}
+          height={36}
+          style={{ borderRadius: 8, objectFit: "contain" }}
         />
-        <video ref={videoRef} style={{ display: "none" }} playsInline muted />
-        {recState === "countdown" && (
-          <div style={overlayCenter}>
-            <div style={{ color: "#fff", fontSize: 48, fontWeight: 800 }}>
-              Starting…
-            </div>
-          </div>
-        )}
-
-        {/* Minimal HUD while recording (tap to show/hide) */}
-        {(isRecording || isPaused) && showHud && (
-          <div style={hudBar}>
-            <button onClick={handlePauseResume} style={hudBtn}>
-              {isRecording ? "Pause" : "Resume"}
-            </button>
-            <button onClick={handleFinish} style={hudBtnPrimary}>
-              Finish
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Collapsible controls drawer (hidden during recording unless HUD open) */}
-      {!isRecording && !isPaused && (
-        <div style={drawerWrap}>
-          {/* Centered responsive container */}
-          <div style={container}>
-            <button
-              onClick={() => setDrawerOpen((d) => !d)}
-              style={drawerToggle}
-            >
-              {drawerOpen ? "Hide Controls" : "Show Controls"}
-            </button>
-            {drawerOpen && (
-              <div style={drawerBody}>
-                <label style={lbl}>Script</label>
-                <textarea
-                  value={script}
-                  onChange={(e) => setScript(e.target.value)}
-                  rows={8}
-                  style={input({ height: 160 })}
-                  placeholder="Paste your Daily Prompt…"
-                />
-
-                <div style={row}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <label style={lbl}>Camera</label>
-                    <select
-                      value={camId}
-                      onChange={(e) => setCamId(e.target.value)}
-                      style={select}
-                    >
-                      {cams.length === 0 && (
-                        <option value="">(No camera detected)</option>
-                      )}
-                      {cams.map((d) => (
-                        <option key={d.deviceId} value={d.deviceId}>
-                          {d.label || "Camera"}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <label style={lbl}>Microphone</label>
-                    <select
-                      value={micId}
-                      onChange={(e) => setMicId(e.target.value)}
-                      style={select}
-                    >
-                      {mics.length === 0 && (
-                        <option value="">(No mic detected)</option>
-                      )}
-                      {mics.map((d) => (
-                        <option key={d.deviceId} value={d.deviceId}>
-                          {d.label || "Mic"}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div style={row}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-  <label style={lbl}>WPM (speed)</label>
-
-  {/* Numeric input */}
-  <input
-    type="number"
-    min={80}
-    max={150}
-    value={wpm}
-    onChange={(e) => {
-      const val = parseInt(e.target.value || "105", 10);
-      const clamped = Math.max(80, Math.min(150, isNaN(val) ? 105 : val));
-      setWpm(clamped);
-    }}
-    style={input({ marginBottom: 4 })}
-  />
-
-  {/* Slider */}
-  <input
-    type="range"
-    min={80}
-    max={150}
-    step={1}
-    value={wpm}
-    onChange={(e) => setWpm(parseInt(e.target.value, 10))}
-    style={{ width: "100%" }}
-  />
-</div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <label style={lbl}>Font</label>
-                    <select
-                      value={
-                        typeof fontSize === "number" ? String(fontSize) : "fit"
-                      }
-                      onChange={(e) =>
-                        setFontSize(
-                          e.target.value === "fit"
-                            ? "fit"
-                            : Math.max(
-                                28,
-                                Math.min(96, parseInt(e.target.value, 10))
-                              )
-                        )
-                      }
-                      style={select}
-                    >
-                      <option value="fit">Fit to screen</option>
-                      {[36, 42, 48, 56, 64, 72, 80].map((n) => (
-                        <option key={n} value={n}>
-                          {n}px
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div style={row}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <label style={lbl}>Line height</label>
-                    <input
-                      type="number"
-                      step="0.05"
-                      min={1}
-                      max={2}
-                      value={lineHeight}
-                      onChange={(e) =>
-                        setLineHeight(
-                          parseFloat(e.target.value || "1.25")
-                        )
-                      }
-                      style={input()}
-                    />
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <label style={lbl}>Webcam size (%)</label>
-                    <input
-                      type="number"
-                      min={10}
-                      max={35}
-                      value={pipPct}
-                      onChange={(e) =>
-                        setPipPct(parseInt(e.target.value || "18", 10))
-                      }
-                      style={input()}
-                    />
-                  </div>
-                </div>
-
-                <div style={row}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <label style={lbl}>Camera offset (up/down)</label>
-                    <input
-                      type="range"
-                      min={-40}
-                      max={40}
-                      value={cameraOffset}
-                      onChange={(e) =>
-                        setCameraOffset(parseInt(e.target.value || "0", 10))
-                      }
-                      style={{ width: "100%" }}
-                    />
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 12,
-                    alignItems: "center",
-                    marginTop: 4,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <label
-                    style={{
-                      display: "flex",
-                      gap: 8,
-                      alignItems: "center",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={mirror}
-                      onChange={(e) => setMirror(e.target.checked)}
-                    />
-                    Mirror text
-                  </label>
-                </div>
-
-                {permError && (
-                  <div
-                    style={{
-                      color: "#b91c1c",
-                      fontSize: 14,
-                      marginTop: 8,
-                    }}
-                  >
-                    {permError}
-                  </div>
-                )}
-
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    flexWrap: "wrap",
-                    marginTop: 10,
-                  }}
-                >
-                  <button onClick={handleStart} style={btnPrimary}>
-                    Start & Record
-                  </button>
-                  <button
-                    onClick={() => {
-                      try {
-                        localStorage.setItem("tp_script_v1", script);
-                      } catch {}
-                    }}
-                    style={btnSecondary}
-                  >
-                    Save Script
-                  </button>
-                </div>
-
-                {(downloadUrl || mp4Url) && (
-                  <div
-                    style={{
-                      marginTop: 10,
-                      display: "flex",
-                      gap: 8,
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    {downloadUrl && (
-                      <a
-                        href={downloadUrl}
-                        download="teleprompter.webm"
-                        style={btnLink}
-                      >
-                        ⬇️ Download WEBM
-                      </a>
-                    )}
-                    <button
-                      onClick={convertToMp4}
-                      disabled={transcoding || !downloadUrl}
-                      style={btnSecondary}
-                    >
-                      {transcoding ? "Converting…" : "Convert to MP4 (beta)"}
-                    </button>
-                    {mp4Url && (
-                      <a
-                        href={mp4Url}
-                        download="teleprompter.mp4"
-                        style={btnLink}
-                      >
-                        ⬇️ Download MP4
-                      </a>
-                    )}
-                    {tcError && (
-                      <div
-                        style={{
-                          color: "#b91c1c",
-                          fontSize: 13,
-                        }}
-                      >
-                        {tcError}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {(downloadUrl || mp4Url) && (
-                  <div style={{ marginTop: 10 }}>
-                    <button onClick={handleNewSession} style={btnSecondary}>
-                      New session
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
+        <div>
+          <h1 style={{ margin: 0, fontSize: 20 }}>TFM Teleprompter</h1>
+          <div style={{ fontSize: 12, color: faint }}>
+            Line-by-line guidance with camera overlay
           </div>
         </div>
-      )}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <div style={{ fontSize: 12, color: faint }}>
+            WPM {settings.wpm} · Font {settings.fontSize}px
+          </div>
+          <button
+            type="button"
+            onClick={() => router.push("/today")}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 999,
+              border: `1px solid ${border}`,
+              background: "transparent",
+              color: baseText,
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            Back to Today
+          </button>
+        </div>
+      </header>
+
+      <div className="tele-grid">
+        {/* LEFT: Teleprompter stage */}
+        <section
+          style={{
+            background: "rgba(15,23,42,.98)",
+            borderRadius: 18,
+            border: `1px solid ${border}`,
+            padding: 10,
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 420,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 8,
+            }}
+          >
+            <div style={{ fontSize: 13, color: faint }}>Teleprompter Stage</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() =>
+                  handleChangeSettings("autoStart", !settings.autoStart)
+                }
+                style={{
+                  fontSize: 11,
+                  padding: "4px 8px",
+                  borderRadius: 999,
+                  border: `1px solid ${
+                    settings.autoStart ? teal : "rgba(148,163,184,.5)"
+                  }`,
+                  background: settings.autoStart
+                    ? "rgba(34,197,94,.15)"
+                    : "transparent",
+                  color: settings.autoStart ? teal : faint,
+                  cursor: "pointer",
+                }}
+              >
+                Auto start
+              </button>
+              <button
+                type="button"
+                onClick={handleResetRecording}
+                style={{
+                  fontSize: 11,
+                  padding: "4px 8px",
+                  borderRadius: 999,
+                  border: `1px solid rgba(148,163,184,.5)`,
+                  background: "transparent",
+                  color: faint,
+                  cursor: "pointer",
+                }}
+              >
+                New session
+              </button>
+            </div>
+          </div>
+
+          <div
+            style={{
+              position: "relative",
+              flex: 1,
+              borderRadius: 16,
+              overflow: "hidden",
+              background: "black",
+            }}
+          >
+            <canvas
+              ref={canvasRef}
+              style={{
+                width: "100%",
+                height: "100%",
+                display: "block",
+              }}
+            />
+            <video
+              ref={videoRef}
+              muted
+              playsInline
+              style={{
+                display: "none",
+              }}
+            />
+          </div>
+
+          {/* Recording controls */}
+          <div
+            style={{
+              marginTop: 10,
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
+            <button
+              type="button"
+              onClick={handleStart}
+              disabled={isRecording || isPaused}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 999,
+                border: "none",
+                background: isRecording || isPaused ? "#4b5563" : "#ef4444",
+                color: "#f9fafb",
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: isRecording || isPaused ? "default" : "pointer",
+              }}
+            >
+              ● Start
+            </button>
+            <button
+              type="button"
+              onClick={handlePauseResume}
+              disabled={recState === "idle" || recState === "finished"}
+              style={{
+                padding: "8px 12px",
+                borderRadius: 999,
+                border: `1px solid ${border}`,
+                background: "transparent",
+                color: baseText,
+                fontSize: 13,
+                cursor:
+                  recState === "idle" || recState === "finished"
+                    ? "default"
+                    : "pointer",
+              }}
+            >
+              {isPaused ? "Resume" : "Pause"}
+            </button>
+            <button
+              type="button"
+              onClick={handleStop}
+              disabled={recState !== "recording" && recState !== "paused"}
+              style={{
+                padding: "8px 12px",
+                borderRadius: 999,
+                border: `1px solid ${border}`,
+                background: "transparent",
+                color: baseText,
+                fontSize: 13,
+                cursor:
+                  recState !== "recording" && recState !== "paused"
+                    ? "default"
+                    : "pointer",
+              }}
+            >
+              Stop
+            </button>
+
+            {recState === "recording" && (
+              <span style={{ fontSize: 12, color: "#f97316" }}>
+                Recording… speak naturally.
+              </span>
+            )}
+            {recState === "finished" && (
+              <span style={{ fontSize: 12, color: teal }}>
+                Finished. You can download below.
+              </span>
+            )}
+          </div>
+
+          {tcError && (
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 12,
+                color: "#fecaca",
+              }}
+            >
+              {tcError}
+            </div>
+          )}
+
+          {/* Download row */}
+          {downloadUrl && (
+            <div
+              style={{
+                marginTop: 10,
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 10,
+                alignItems: "center",
+              }}
+            >
+              <a
+                href={downloadUrl}
+                download="tfm-teleprompter.webm"
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: `1px solid ${border}`,
+                  fontSize: 12,
+                  color: baseText,
+                  textDecoration: "none",
+                }}
+              >
+                Download .webm
+              </a>
+            </div>
+          )}
+        </section>
+
+        {/* RIGHT: Script + settings */}
+        <section
+          style={{
+            background: panel,
+            borderRadius: 18,
+            border: `1px solid ${border}`,
+            padding: 12,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          {/* Script editor */}
+          <div>
+            <div style={hudLabel}>Script</div>
+            <textarea
+              value={script}
+              onChange={(e) => setScript(e.target.value)}
+              rows={10}
+              style={{
+                marginTop: 4,
+                width: "100%",
+                borderRadius: 12,
+                border: `1px solid ${border}`,
+                background: "rgba(15,23,42,.9)",
+                color: baseText,
+                padding: 10,
+                fontSize: 14,
+                lineHeight: 1.5,
+                resize: "vertical",
+              }}
+              placeholder="Paste or type your script, one phrase per line."
+            />
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: 11,
+                color: faint,
+                display: "flex",
+                justifyContent: "space-between",
+              }}
+            >
+              <span>
+                {lineMeta.lines.length} lines · {lineMeta.totalWords} words
+              </span>
+              <button
+                type="button"
+                onClick={() => setScript(DEFAULT_SCRIPT)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  color: "#93c5fd",
+                  fontSize: 11,
+                  cursor: "pointer",
+                }}
+              >
+                Reset sample
+              </button>
+            </div>
+          </div>
+
+          {/* WPM slider */}
+          <div>
+            <div
+              style={{
+                ...hudLabel,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <span>Scroll speed (WPM)</span>
+              <span style={{ fontSize: 11, color: baseText }}>
+                {settings.wpm} wpm
+              </span>
+            </div>
+            <input
+              type="range"
+              min={80}
+              max={150}
+              step={1}
+              value={settings.wpm}
+              onChange={(e) =>
+                handleChangeSettings("wpm", Number(e.target.value) || 105)
+              }
+              style={sliderStyle}
+            />
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 10,
+                color: faint,
+                marginTop: 2,
+              }}
+            >
+              <span>80</span>
+              <span>105 (default)</span>
+              <span>150</span>
+            </div>
+          </div>
+
+          {/* Font size */}
+          <div>
+            <div
+              style={{
+                ...hudLabel,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <span>Font size</span>
+              <span style={{ fontSize: 11, color: baseText }}>
+                {settings.fontSize}px
+              </span>
+            </div>
+            <input
+              type="range"
+              min={22}
+              max={44}
+              step={1}
+              value={settings.fontSize}
+              onChange={(e) =>
+                handleChangeSettings("fontSize", Number(e.target.value) || 32)
+              }
+              style={sliderStyle}
+            />
+          </div>
+
+          {/* Line height */}
+          <div>
+            <div
+              style={{
+                ...hudLabel,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <span>Line spacing</span>
+              <span style={{ fontSize: 11, color: baseText }}>
+                {settings.lineHeight.toFixed(2)}x
+              </span>
+            </div>
+            <input
+              type="range"
+              min={120}
+              max={180}
+              step={5}
+              value={Math.round(settings.lineHeight * 100)}
+              onChange={(e) =>
+                handleChangeSettings(
+                  "lineHeight",
+                  Number(e.target.value) / 100 || 1.4
+                )
+              }
+              style={sliderStyle}
+            />
+          </div>
+
+          {/* Mirror toggle (info only for now) */}
+          <div
+            style={{
+              marginTop: 4,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              fontSize: 12,
+            }}
+          >
+            <span style={hudLabel}>Mirror for physical teleprompter</span>
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                cursor: "pointer",
+                fontSize: 12,
+                color: baseText,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={settings.mirror}
+                onChange={(e) =>
+                  handleChangeSettings("mirror", e.target.checked)
+                }
+              />
+              <span>Mirror text</span>
+            </label>
+          </div>
+          {settings.mirror && (
+            <div style={{ fontSize: 11, color: faint, marginTop: 2 }}>
+              Use your display / OBS settings to mirror the canvas output when
+              using a glass teleprompter.
+            </div>
+          )}
+        </section>
+      </div>
     </main>
   );
 }
 
-/* ---------- styles ---------- */
-const overlayCenter: React.CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  display: "grid",
-  placeItems: "center",
-  background: "rgba(0,0,0,0.5)",
-};
-const hudBar: React.CSSProperties = {
-  position: "absolute",
-  left: 0,
-  right: 0,
-  bottom: 16,
-  display: "flex",
-  justifyContent: "center",
-  gap: 10,
-};
-const hudBtn: React.CSSProperties = {
-  background: "#e5e7eb",
-  color: "#111",
-  border: "1px solid #d1d5db",
-  borderRadius: 999,
-  padding: "10px 14px",
-  fontWeight: 700,
-};
-const hudBtnPrimary: React.CSSProperties = {
-  background: "#111827",
-  color: "#fff",
-  border: "1px solid #111827",
-  borderRadius: 999,
-  padding: "10px 14px",
-  fontWeight: 700,
-};
-
-const drawerWrap: React.CSSProperties = {
-  position: "fixed",
-  left: 12,
-  right: 12,
-  bottom: 12,
-  pointerEvents: "auto",
-};
-const container: React.CSSProperties = {
-  width: "100%",
-  maxWidth: 900,
-  margin: "0 auto",
-};
-const drawerToggle: React.CSSProperties = {
-  background: "#111827",
-  color: "#fff",
-  border: "1px solid #111827",
-  borderRadius: 12,
-  padding: "10px 14px",
-  fontWeight: 700,
-};
-const drawerBody: React.CSSProperties = {
-  marginTop: 8,
-  background: "#fff",
-  color: "#111",
-  border: "1px solid #e5e7eb",
-  borderRadius: 12,
-  padding: 12,
-};
-const row: React.CSSProperties = {
-  display: "flex",
-  gap: 10,
-  alignItems: "center",
-  marginTop: 8,
-  flexWrap: "wrap",
-};
-const lbl: React.CSSProperties = {
-  fontWeight: 600,
-  display: "block",
-  marginTop: 4,
-  marginBottom: 4,
-};
-const input = (extra?: React.CSSProperties): React.CSSProperties => ({
-  width: "100%",
-  border: "1px solid #cbd5e1",
-  borderRadius: 10,
-  padding: 10,
-  background: "#fff",
-  color: "#111",
-  ...extra,
-});
-const select: React.CSSProperties = {
-  width: "100%",
-  border: "1px solid #cbd5e1",
-  borderRadius: 10,
-  padding: 10,
-  background: "#fff",
-  color: "#111",
-};
-const btnPrimary: React.CSSProperties = {
-  background: "#111827",
-  color: "#fff",
-  border: "1px solid #111827",
-  borderRadius: 999,
-  padding: "10px 14px",
-  fontWeight: 700,
-  cursor: "pointer",
-};
-const btnSecondary: React.CSSProperties = {
-  background: "#e5e7eb",
-  color: "#111",
-  border: "1px solid #d1d5db",
-  borderRadius: 999,
-  padding: "8px 12px",
-  fontWeight: 700,
-  cursor: "pointer",
-};
-const btnLink: React.CSSProperties = {
-  display: "inline-block",
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid #111827",
-  textDecoration: "none",
-  color: "#111",
-};
-
-/* ---------- export as client-only ---------- */
-export default dynamic(() => Promise.resolve(TeleprompterPageInner), {
-  ssr: false,
-});
+/* ========= Page wrapper (SSR-safe) ========= */
+/** On the server, render nothing; on the client, render the full app. */
+export default function TeleprompterPage() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return <TeleprompterInner />;
+}
