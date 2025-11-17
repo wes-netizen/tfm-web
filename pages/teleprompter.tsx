@@ -466,19 +466,33 @@ function TeleprompterInner() {
   }, [stopMediaRecorder]);
 
   const handleResetRecording = useCallback(() => {
+    // stop any active recording first
+    if (mediaRecorderRef.current) {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore
+      }
+      mediaRecorderRef.current = null;
+    }
+
+    // clear download URL
     setDownloadUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return "";
     });
+
     setTcError("");
 
+    // reset buffers / timing
     recordedBlobsRef.current = [];
-    recordedBlobRef = { current: null } as any;
+    recordedBlobRef.current = null;     // ✅ only mutate .current, don't reassign the ref
 
     startTsRef.current = 0;
     pauseOffsetRef.current = 0;
     lastPauseStartRef.current = null;
 
+    // back to idle state
     setRecState("idle");
   }, []);
 
