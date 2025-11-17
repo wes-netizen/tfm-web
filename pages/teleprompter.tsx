@@ -141,7 +141,7 @@ function TeleprompterInner() {
   const pauseOffsetRef = useRef<number>(0);
   const lastPauseStartRef = useRef<number | null>(null);
 
-  // Precomputed line meta
+  // Precomputed line meta (based on logical lines, not wrapped)
   const lineMeta = useMemo(() => buildLineMeta(script), [script]);
 
   /* ========= Load script from localStorage (TFM entry) ========= */
@@ -193,6 +193,16 @@ function TeleprompterInner() {
     attachCamera().catch(() => {});
   }, [attachCamera]);
 
+  /* ========= Stop camera tracks ========= */
+  const stopTracks = useCallback(() => {
+    if (!isBrowser) return;
+    const v = videoRef.current;
+    if (v && v.srcObject instanceof MediaStream) {
+      v.srcObject.getTracks().forEach((t) => t.stop());
+      v.srcObject = null;
+    }
+  }, []);
+
   /* ========= Drawing loop ========= */
   const drawFrame = useCallback(() => {
     const canvas = canvasRef.current;
@@ -234,16 +244,25 @@ function TeleprompterInner() {
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
 
-    // Background
     ctx.save();
+
+    // Optional mirror mode (for physical glass teleprompter)
+    if (settings.mirror) {
+      ctx.translate(width, 0);
+      ctx.scale(-1, 1);
+    }
+
+    // Background
     ctx.fillStyle = "black";
     ctx.fillRect(0, 0, width, height);
 
-    // Camera PIP (top-right)
+    // Camera PIP (top-right, not mirrored visually because we mirror canvas)
     const pipWidth = Math.floor(width * 0.22);
     const pipHeight = Math.floor(height * 0.27);
-    const pipX = width - pipWidth - 24;
-    const pipY = 24;
+    const pipMarginX = 24;
+    const pipMarginY = 24;
+    const pipX = settings.mirror ? pipMarginX : width - pipWidth - pipMarginX;
+    const pipY = pipMarginY;
 
     if (video.readyState >= 2) {
       ctx.save();
@@ -284,15 +303,35 @@ function TeleprompterInner() {
       ctx.strokeRect(pipX, pipY, pipWidth, pipHeight);
     }
 
-    // Teleprompter text (full width, centered)
+    // Teleprompter text (full width, centered, auto-fit)
     const margin = 40;
-    const fontSize = settings.fontSize;
-    const lineGap = fontSize * settings.lineHeight;
+    const rawFontSize = settings.fontSize;
+    const lineGapBase = rawFontSize * settings.lineHeight;
 
-    ctx.font =
-      `${fontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
     ctx.textBaseline = "top";
     ctx.textAlign = "center";
+
+    // First pass: compute max width at requested font size
+    ctx.font =
+      `${rawFontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+
+    let maxLineWidth = 0;
+    for (const line of lines) {
+      const w = ctx.measureText(line).width;
+      if (w > maxLineWidth) maxLineWidth = w;
+    }
+
+    const maxAllowedWidth = width - margin * 2;
+    let effectiveFontSize = rawFontSize;
+
+    if (maxLineWidth > maxAllowedWidth && maxLineWidth > 0) {
+      const ratio = maxAllowedWidth / maxLineWidth;
+      effectiveFontSize = Math.max(14, Math.floor(rawFontSize * ratio));
+    }
+
+    const lineGap = effectiveFontSize * settings.lineHeight;
+    ctx.font =
+      `${effectiveFontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
 
     const centerX = width / 2;
     const centerY = height / 2;
@@ -324,7 +363,7 @@ function TeleprompterInner() {
 
     ctx.restore();
     rafRef.current = requestAnimationFrame(drawFrame);
-  }, [lineMeta, recState, settings.wpm, settings.fontSize, settings.lineHeight]);
+  }, [lineMeta, recState, settings.wpm, settings.fontSize, settings.lineHeight, settings.mirror]);
 
   useEffect(() => {
     if (!isBrowser) return;
@@ -332,25 +371,32 @@ function TeleprompterInner() {
     rafRef.current = requestAnimationFrame(drawFrame);
     return () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      // stop camera when leaving page
+      stopTracks();
+      if (mediaRecorderRef.current) {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch {
+          // ignore
+        }
+        mediaRecorderRef.current = null;
+      }
     };
-  }, [drawFrame]);
+  }, [drawFrame, stopTracks]);
 
   /* ========= Recording ========= */
   const stopMediaRecorder = useCallback(() => {
     if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore
+      }
       mediaRecorderRef.current = null;
     }
-  }, []);
-
-  const stopTracks = useCallback(() => {
-    if (!isBrowser) return;
-    const v = videoRef.current;
-    if (v && v.srcObject instanceof MediaStream) {
-      v.srcObject.getTracks().forEach((t) => t.stop());
-      v.srcObject = null;
-    }
-  }, []);
+    // also stop camera preview
+    stopTracks();
+  }, [stopTracks]);
 
   const handleStart = useCallback(async () => {
     if (!isBrowser || recState === "recording") return;
@@ -432,11 +478,10 @@ function TeleprompterInner() {
       setRecState("recording");
     } catch (e: any) {
       setTcError(e?.message || "Unable to start recording");
-      stopTracks();
       stopMediaRecorder();
       setRecState("idle");
     }
-  }, [micId, recState, stopMediaRecorder, stopTracks, script]);
+  }, [micId, recState, stopMediaRecorder, script]);
 
   const handlePauseResume = useCallback(() => {
     if (!isBrowser) return;
@@ -461,9 +506,13 @@ function TeleprompterInner() {
 
   const handleStop = useCallback(() => {
     if (!isBrowser) return;
-    if (!mediaRecorderRef.current) return;
+    if (!mediaRecorderRef.current) {
+      // still stop camera if user hits Stop when idle
+      stopTracks();
+      return;
+    }
     stopMediaRecorder();
-  }, [stopMediaRecorder]);
+  }, [stopMediaRecorder, stopTracks]);
 
   const handleResetRecording = useCallback(() => {
     // stop any active recording first
@@ -476,6 +525,9 @@ function TeleprompterInner() {
       mediaRecorderRef.current = null;
     }
 
+    // stop camera
+    stopTracks();
+
     // clear download URL
     setDownloadUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
@@ -486,7 +538,7 @@ function TeleprompterInner() {
 
     // reset buffers / timing
     recordedBlobsRef.current = [];
-    recordedBlobRef.current = null;     // ✅ only mutate .current, don't reassign the ref
+    recordedBlobRef.current = null;
 
     startTsRef.current = 0;
     pauseOffsetRef.current = 0;
@@ -494,7 +546,7 @@ function TeleprompterInner() {
 
     // back to idle state
     setRecState("idle");
-  }, []);
+  }, [stopTracks]);
 
   /* ========= Auto-start ========= */
   useEffect(() => {
@@ -563,7 +615,10 @@ function TeleprompterInner() {
           </div>
           <button
             type="button"
-            onClick={() => router.push("/today")}
+            onClick={() => {
+              stopTracks();
+              router.push("/today");
+            }}
             style={{
               padding: "6px 10px",
               borderRadius: 999,
@@ -774,6 +829,9 @@ function TeleprompterInner() {
             >
               Download video
             </a>
+            <span style={{ fontSize: 11, color: faint }}>
+              (Saved to local video history)
+            </span>
           </div>
         )}
       </section>
@@ -976,4 +1034,5 @@ export default function TeleprompterPage() {
   }
   return <TeleprompterInner />;
 }
+
 

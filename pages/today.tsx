@@ -66,9 +66,9 @@ const dedupeStrings = (lines: string[]): string[] => {
   return out;
 };
 
-/** Prayer-specific normaliser – guarantees exactly one clean prefix */
+/** Prayer-specific normaliser – guarantees exactly one clean "I pray for ..." prefix */
 const normalizePrayerLine = (line: string): string => {
-  const clean = stripBullets(line);
+  const clean = stripBullets(line).trim();
   const lower = clean.toLowerCase();
 
   const patterns = [
@@ -88,9 +88,10 @@ const normalizePrayerLine = (line: string): string => {
   }
 
   if (!body) {
-    return "I am praying for clarity and courage today.";
+    return "I pray for clarity and courage today.";
   }
-  return `I am praying for ${body}`;
+
+  return `I pray for ${body}`;
 };
 
 export default function TodayPage() {
