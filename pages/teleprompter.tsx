@@ -144,6 +144,19 @@ function TeleprompterInner() {
   // Precomputed line meta
   const lineMeta = useMemo(() => buildLineMeta(script), [script]);
 
+  /* ========= Load script from localStorage (TFM entry) ========= */
+  useEffect(() => {
+    if (!isBrowser) return;
+    try {
+      const stored = window.localStorage.getItem("tfm_script");
+      if (stored && stored.trim()) {
+        setScript(stored);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   /* ========= Devices ========= */
   useEffect(() => {
     if (!isBrowser) return;
@@ -189,7 +202,8 @@ function TeleprompterInner() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const now =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
     let elapsed = 0;
 
     if (recState === "recording") {
@@ -199,7 +213,8 @@ function TeleprompterInner() {
       if (lastPauseStartRef.current === null) {
         lastPauseStartRef.current = now;
       }
-      elapsed = lastPauseStartRef.current - startTsRef.current - pauseOffsetRef.current;
+      elapsed =
+        lastPauseStartRef.current - startTsRef.current - pauseOffsetRef.current;
     } else if (recState === "finished") {
       elapsed = (lineMeta.totalWords / settings.wpm) * 60000;
     } else {
@@ -224,9 +239,9 @@ function TeleprompterInner() {
     ctx.fillStyle = "black";
     ctx.fillRect(0, 0, width, height);
 
-    // Camera PIP
-    const pipWidth = Math.floor(width * 0.28);
-    const pipHeight = Math.floor(height * 0.35);
+    // Camera PIP (top-right)
+    const pipWidth = Math.floor(width * 0.22);
+    const pipHeight = Math.floor(height * 0.27);
     const pipX = width - pipWidth - 24;
     const pipY = 24;
 
@@ -269,45 +284,45 @@ function TeleprompterInner() {
       ctx.strokeRect(pipX, pipY, pipWidth, pipHeight);
     }
 
-    // Teleprompter text
+    // Teleprompter text (full width, centered)
     const margin = 40;
-    const textWidth = width - margin * 2 - pipWidth * 0.3;
     const fontSize = settings.fontSize;
     const lineGap = fontSize * settings.lineHeight;
 
-    ctx.font = `${fontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    ctx.font =
+      `${fontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
     ctx.textBaseline = "top";
+    ctx.textAlign = "center";
 
+    const centerX = width / 2;
     const centerY = height / 2;
     const startY = centerY - currentLineIndex * lineGap - lineGap / 2;
 
+    // frame
+    ctx.strokeStyle = "rgba(148,163,184,.35)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(margin / 2, margin / 2, width - margin, height - margin);
+
     for (let i = 0; i < lines.length; i++) {
       const y = startY + i * lineGap;
-      if (y < margin - lineGap || y > height - margin + lineGap) continue;
+      if (y < margin || y > height - margin) continue;
 
       const text = lines[i];
-      const x = margin;
 
       if (i === currentLineIndex) {
         ctx.fillStyle = accent;
         ctx.globalAlpha = 0.18;
-        ctx.fillRect(
-          margin - 16,
-          y - 6,
-          textWidth + 32,
-          lineGap + 12
-        );
+        ctx.fillRect(margin / 2, y - 6, width - margin, lineGap + 12);
         ctx.globalAlpha = 1;
         ctx.fillStyle = accent;
       } else {
         ctx.fillStyle = baseText;
       }
 
-      ctx.fillText(text, x, y);
+      ctx.fillText(text, centerX, y);
     }
 
     ctx.restore();
-
     rafRef.current = requestAnimationFrame(drawFrame);
   }, [lineMeta, recState, settings.wpm, settings.fontSize, settings.lineHeight]);
 
@@ -387,8 +402,28 @@ function TeleprompterInner() {
           type: "video/webm",
         });
         recordedBlobRef.current = blob;
+
         const url = URL.createObjectURL(blob);
         setDownloadUrl(url);
+
+        try {
+          if (typeof window !== "undefined") {
+            const raw =
+              window.localStorage.getItem("tfm_video_history") || "[]";
+            const arr = JSON.parse(raw) as any[];
+            arr.push({
+              createdAt: new Date().toISOString(),
+              script,
+            });
+            window.localStorage.setItem(
+              "tfm_video_history",
+              JSON.stringify(arr)
+            );
+          }
+        } catch {
+          // ignore
+        }
+
         setRecState("finished");
       };
 
@@ -401,7 +436,7 @@ function TeleprompterInner() {
       stopMediaRecorder();
       setRecState("idle");
     }
-  }, [micId, recState, stopMediaRecorder, stopTracks]);
+  }, [micId, recState, stopMediaRecorder, stopTracks, script]);
 
   const handlePauseResume = useCallback(() => {
     if (!isBrowser) return;
@@ -438,7 +473,7 @@ function TeleprompterInner() {
     setTcError("");
 
     recordedBlobsRef.current = [];
-    recordedBlobRef.current = null;
+    recordedBlobRef = { current: null } as any;
 
     startTsRef.current = 0;
     pauseOffsetRef.current = 0;
@@ -457,7 +492,7 @@ function TeleprompterInner() {
     return () => clearTimeout(id);
   }, [settings.autoStart, recState, handleStart]);
 
-  /* ========= UI ========= */
+  /* ========= UI helpers ========= */
   const isRecording = recState === "recording";
   const isPaused = recState === "paused";
 
@@ -484,18 +519,9 @@ function TeleprompterInner() {
           font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
             sans-serif;
         }
-        .tele-grid {
-          display: grid;
-          grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.1fr);
-          gap: 16px;
-        }
-        @media (max-width: 900px) {
-          .tele-grid {
-            grid-template-columns: minmax(0, 1fr);
-          }
-        }
       `}</style>
 
+      {/* Header */}
       <header
         style={{
           display: "flex",
@@ -539,423 +565,401 @@ function TeleprompterInner() {
         </div>
       </header>
 
-      <div className="tele-grid">
-        {/* LEFT: Teleprompter stage */}
-        <section
+      {/* Teleprompter full-width */}
+      <section
+        style={{
+          background: "rgba(15,23,42,.98)",
+          borderRadius: 18,
+          border: `1px solid ${border}`,
+          padding: 10,
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 420,
+        }}
+      >
+        <div
           style={{
-            background: "rgba(15,23,42,.98)",
-            borderRadius: 18,
-            border: `1px solid ${border}`,
-            padding: 10,
             display: "flex",
-            flexDirection: "column",
-            minHeight: 420,
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 8,
           }}
         >
-          <div
+          <div style={{ fontSize: 13, color: faint }}>Teleprompter Stage</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() =>
+                handleChangeSettings("autoStart", !settings.autoStart)
+              }
+              style={{
+                fontSize: 11,
+                padding: "4px 8px",
+                borderRadius: 999,
+                border: `1px solid ${
+                  settings.autoStart ? teal : "rgba(148,163,184,.5)"
+                }`,
+                background: settings.autoStart
+                  ? "rgba(34,197,94,.15)"
+                  : "transparent",
+                color: settings.autoStart ? teal : faint,
+                cursor: "pointer",
+              }}
+            >
+              Auto start
+            </button>
+            <button
+              type="button"
+              onClick={handleResetRecording}
+              style={{
+                fontSize: 11,
+                padding: "4px 8px",
+                borderRadius: 999,
+                border: `1px solid rgba(148,163,184,.5)`,
+                background: "transparent",
+                color: faint,
+                cursor: "pointer",
+              }}
+            >
+              New session
+            </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            position: "relative",
+            flex: 1,
+            borderRadius: 16,
+            overflow: "hidden",
+            background: "black",
+          }}
+        >
+          <canvas
+            ref={canvasRef}
             style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: 8,
+              width: "100%",
+              height: "100%",
+              display: "block",
+            }}
+          />
+          <video ref={videoRef} muted playsInline style={{ display: "none" }} />
+        </div>
+
+        {/* Recording controls */}
+        <div
+          style={{
+            marginTop: 10,
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            alignItems: "center",
+          }}
+        >
+          <button
+            type="button"
+            onClick={handleStart}
+            disabled={isRecording || isPaused}
+            style={{
+              padding: "8px 14px",
+              borderRadius: 999,
+              border: "none",
+              background: isRecording || isPaused ? "#4b5563" : "#ef4444",
+              color: "#f9fafb",
+              fontWeight: 700,
+              fontSize: 13,
+              cursor: isRecording || isPaused ? "default" : "pointer",
             }}
           >
-            <div style={{ fontSize: 13, color: faint }}>Teleprompter Stage</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                type="button"
-                onClick={() =>
-                  handleChangeSettings("autoStart", !settings.autoStart)
-                }
-                style={{
-                  fontSize: 11,
-                  padding: "4px 8px",
-                  borderRadius: 999,
-                  border: `1px solid ${
-                    settings.autoStart ? teal : "rgba(148,163,184,.5)"
-                  }`,
-                  background: settings.autoStart
-                    ? "rgba(34,197,94,.15)"
-                    : "transparent",
-                  color: settings.autoStart ? teal : faint,
-                  cursor: "pointer",
-                }}
-              >
-                Auto start
-              </button>
-              <button
-                type="button"
-                onClick={handleResetRecording}
-                style={{
-                  fontSize: 11,
-                  padding: "4px 8px",
-                  borderRadius: 999,
-                  border: `1px solid rgba(148,163,184,.5)`,
-                  background: "transparent",
-                  color: faint,
-                  cursor: "pointer",
-                }}
-              >
-                New session
-              </button>
-            </div>
-          </div>
-
-          <div
+            ● Start
+          </button>
+          <button
+            type="button"
+            onClick={handlePauseResume}
+            disabled={recState === "idle" || recState === "finished"}
             style={{
-              position: "relative",
-              flex: 1,
-              borderRadius: 16,
-              overflow: "hidden",
-              background: "black",
+              padding: "8px 12px",
+              borderRadius: 999,
+              border: `1px solid ${border}`,
+              background: "transparent",
+              color: baseText,
+              fontSize: 13,
+              cursor:
+                recState === "idle" || recState === "finished"
+                  ? "default"
+                  : "pointer",
             }}
           >
-            <canvas
-              ref={canvasRef}
-              style={{
-                width: "100%",
-                height: "100%",
-                display: "block",
-              }}
-            />
-            <video
-              ref={videoRef}
-              muted
-              playsInline
-              style={{
-                display: "none",
-              }}
-            />
-          </div>
+            {isPaused ? "Resume" : "Pause"}
+          </button>
+          <button
+            type="button"
+            onClick={handleStop}
+            disabled={recState !== "recording" && recState !== "paused"}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 999,
+              border: `1px solid ${border}`,
+              background: "transparent",
+              color: baseText,
+              fontSize: 13,
+              cursor:
+                recState !== "recording" && recState !== "paused"
+                  ? "default"
+                  : "pointer",
+            }}
+          >
+            Stop
+          </button>
 
-          {/* Recording controls */}
+          {recState === "recording" && (
+            <span style={{ fontSize: 12, color: "#f97316" }}>
+              Recording… speak naturally.
+            </span>
+          )}
+          {recState === "finished" && (
+            <span style={{ fontSize: 12, color: teal }}>
+              Finished. You can download below.
+            </span>
+          )}
+        </div>
+
+        {tcError && (
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: 12,
+              color: "#fecaca",
+            }}
+          >
+            {tcError}
+          </div>
+        )}
+
+        {downloadUrl && (
           <div
             style={{
               marginTop: 10,
               display: "flex",
               flexWrap: "wrap",
-              gap: 8,
+              gap: 10,
               alignItems: "center",
             }}
           >
-            <button
-              type="button"
-              onClick={handleStart}
-              disabled={isRecording || isPaused}
+            <a
+              href={downloadUrl}
+              download="tfm-session.mp4"
               style={{
-                padding: "8px 14px",
-                borderRadius: 999,
-                border: "none",
-                background: isRecording || isPaused ? "#4b5563" : "#ef4444",
-                color: "#f9fafb",
-                fontWeight: 700,
-                fontSize: 13,
-                cursor: isRecording || isPaused ? "default" : "pointer",
-              }}
-            >
-              ● Start
-            </button>
-            <button
-              type="button"
-              onClick={handlePauseResume}
-              disabled={recState === "idle" || recState === "finished"}
-              style={{
-                padding: "8px 12px",
+                padding: "6px 10px",
                 borderRadius: 999,
                 border: `1px solid ${border}`,
-                background: "transparent",
-                color: baseText,
-                fontSize: 13,
-                cursor:
-                  recState === "idle" || recState === "finished"
-                    ? "default"
-                    : "pointer",
-              }}
-            >
-              {isPaused ? "Resume" : "Pause"}
-            </button>
-            <button
-              type="button"
-              onClick={handleStop}
-              disabled={recState !== "recording" && recState !== "paused"}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 999,
-                border: `1px solid ${border}`,
-                background: "transparent",
-                color: baseText,
-                fontSize: 13,
-                cursor:
-                  recState !== "recording" && recState !== "paused"
-                    ? "default"
-                    : "pointer",
-              }}
-            >
-              Stop
-            </button>
-
-            {recState === "recording" && (
-              <span style={{ fontSize: 12, color: "#f97316" }}>
-                Recording… speak naturally.
-              </span>
-            )}
-            {recState === "finished" && (
-              <span style={{ fontSize: 12, color: teal }}>
-                Finished. You can download below.
-              </span>
-            )}
-          </div>
-
-          {tcError && (
-            <div
-              style={{
-                marginTop: 8,
                 fontSize: 12,
-                color: "#fecaca",
-              }}
-            >
-              {tcError}
-            </div>
-          )}
-
-          {/* Download row */}
-          {downloadUrl && (
-            <div
-              style={{
-                marginTop: 10,
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 10,
-                alignItems: "center",
-              }}
-            >
-              <a
-                href={downloadUrl}
-                download="tfm-teleprompter.webm"
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: `1px solid ${border}`,
-                  fontSize: 12,
-                  color: baseText,
-                  textDecoration: "none",
-                }}
-              >
-                Download .webm
-              </a>
-            </div>
-          )}
-        </section>
-
-        {/* RIGHT: Script + settings */}
-        <section
-          style={{
-            background: panel,
-            borderRadius: 18,
-            border: `1px solid ${border}`,
-            padding: 12,
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-          }}
-        >
-          {/* Script editor */}
-          <div>
-            <div style={hudLabel}>Script</div>
-            <textarea
-              value={script}
-              onChange={(e) => setScript(e.target.value)}
-              rows={10}
-              style={{
-                marginTop: 4,
-                width: "100%",
-                borderRadius: 12,
-                border: `1px solid ${border}`,
-                background: "rgba(15,23,42,.9)",
                 color: baseText,
-                padding: 10,
-                fontSize: 14,
-                lineHeight: 1.5,
-                resize: "vertical",
-              }}
-              placeholder="Paste or type your script, one phrase per line."
-            />
-            <div
-              style={{
-                marginTop: 4,
-                fontSize: 11,
-                color: faint,
-                display: "flex",
-                justifyContent: "space-between",
+                textDecoration: "none",
               }}
             >
-              <span>
-                {lineMeta.lines.length} lines · {lineMeta.totalWords} words
-              </span>
-              <button
-                type="button"
-                onClick={() => setScript(DEFAULT_SCRIPT)}
-                style={{
-                  border: "none",
-                  background: "transparent",
-                  color: "#93c5fd",
-                  fontSize: 11,
-                  cursor: "pointer",
-                }}
-              >
-                Reset sample
-              </button>
-            </div>
+              Download video
+            </a>
           </div>
+        )}
+      </section>
 
-          {/* WPM slider */}
-          <div>
-            <div
-              style={{
-                ...hudLabel,
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <span>Scroll speed (WPM)</span>
-              <span style={{ fontSize: 11, color: baseText }}>
-                {settings.wpm} wpm
-              </span>
-            </div>
-            <input
-              type="range"
-              min={80}
-              max={150}
-              step={1}
-              value={settings.wpm}
-              onChange={(e) =>
-                handleChangeSettings("wpm", Number(e.target.value) || 105)
-              }
-              style={sliderStyle}
-            />
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                fontSize: 10,
-                color: faint,
-                marginTop: 2,
-              }}
-            >
-              <span>80</span>
-              <span>105 (default)</span>
-              <span>150</span>
-            </div>
-          </div>
-
-          {/* Font size */}
-          <div>
-            <div
-              style={{
-                ...hudLabel,
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <span>Font size</span>
-              <span style={{ fontSize: 11, color: baseText }}>
-                {settings.fontSize}px
-              </span>
-            </div>
-            <input
-              type="range"
-              min={22}
-              max={44}
-              step={1}
-              value={settings.fontSize}
-              onChange={(e) =>
-                handleChangeSettings("fontSize", Number(e.target.value) || 32)
-              }
-              style={sliderStyle}
-            />
-          </div>
-
-          {/* Line height */}
-          <div>
-            <div
-              style={{
-                ...hudLabel,
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <span>Line spacing</span>
-              <span style={{ fontSize: 11, color: baseText }}>
-                {settings.lineHeight.toFixed(2)}x
-              </span>
-            </div>
-            <input
-              type="range"
-              min={120}
-              max={180}
-              step={5}
-              value={Math.round(settings.lineHeight * 100)}
-              onChange={(e) =>
-                handleChangeSettings(
-                  "lineHeight",
-                  Number(e.target.value) / 100 || 1.4
-                )
-              }
-              style={sliderStyle}
-            />
-          </div>
-
-          {/* Mirror toggle (info only for now) */}
+      {/* Script + settings BELOW teleprompter */}
+      <section
+        style={{
+          marginTop: 16,
+          background: panel,
+          borderRadius: 18,
+          border: `1px solid ${border}`,
+          padding: 12,
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        {/* Script editor */}
+        <div>
+          <div style={hudLabel}>Script</div>
+          <textarea
+            value={script}
+            onChange={(e) => setScript(e.target.value)}
+            rows={8}
+            style={{
+              marginTop: 4,
+              width: "100%",
+              borderRadius: 12,
+              border: `1px solid ${border}`,
+              background: "rgba(15,23,42,.9)",
+              color: baseText,
+              padding: 10,
+              fontSize: 14,
+              lineHeight: 1.5,
+              resize: "vertical",
+            }}
+            placeholder="Paste or type your script, one phrase per line."
+          />
           <div
             style={{
               marginTop: 4,
+              fontSize: 11,
+              color: faint,
+              display: "flex",
+              justifyContent: "space-between",
+            }}
+          >
+            <span>
+              {lineMeta.lines.length} lines · {lineMeta.totalWords} words
+            </span>
+            <button
+              type="button"
+              onClick={() => setScript(DEFAULT_SCRIPT)}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "#93c5fd",
+                fontSize: 11,
+                cursor: "pointer",
+              }}
+            >
+              Reset sample
+            </button>
+          </div>
+        </div>
+
+        {/* WPM slider */}
+        <div>
+          <div
+            style={{
+              ...hudLabel,
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
-              fontSize: 12,
             }}
           >
-            <span style={hudLabel}>Mirror for physical teleprompter</span>
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                cursor: "pointer",
-                fontSize: 12,
-                color: baseText,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={settings.mirror}
-                onChange={(e) =>
-                  handleChangeSettings("mirror", e.target.checked)
-                }
-              />
-              <span>Mirror text</span>
-            </label>
+            <span>Scroll speed (WPM)</span>
+            <span style={{ fontSize: 11, color: baseText }}>
+              {settings.wpm} wpm
+            </span>
           </div>
-          {settings.mirror && (
-            <div style={{ fontSize: 11, color: faint, marginTop: 2 }}>
-              Use your display / OBS settings to mirror the canvas output when
-              using a glass teleprompter.
-            </div>
-          )}
-        </section>
-      </div>
+          <input
+            type="range"
+            min={80}
+            max={150}
+            step={1}
+            value={settings.wpm}
+            onChange={(e) =>
+              handleChangeSettings("wpm", Number(e.target.value) || 105)
+            }
+            style={sliderStyle}
+          />
+        </div>
+
+        {/* Font size */}
+        <div>
+          <div
+            style={{
+              ...hudLabel,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span>Font size</span>
+            <span style={{ fontSize: 11, color: baseText }}>
+              {settings.fontSize}px
+            </span>
+          </div>
+          <input
+            type="range"
+            min={22}
+            max={44}
+            step={1}
+            value={settings.fontSize}
+            onChange={(e) =>
+              handleChangeSettings("fontSize", Number(e.target.value) || 32)
+            }
+            style={sliderStyle}
+          />
+        </div>
+
+        {/* Line height */}
+        <div>
+          <div
+            style={{
+              ...hudLabel,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span>Line spacing</span>
+            <span style={{ fontSize: 11, color: baseText }}>
+              {settings.lineHeight.toFixed(2)}x
+            </span>
+          </div>
+          <input
+            type="range"
+            min={120}
+            max={180}
+            step={5}
+            value={Math.round(settings.lineHeight * 100)}
+            onChange={(e) =>
+              handleChangeSettings(
+                "lineHeight",
+                Number(e.target.value) / 100 || 1.4
+              )
+            }
+            style={sliderStyle}
+          />
+        </div>
+
+        {/* Mirror toggle */}
+        <div
+          style={{
+            marginTop: 4,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            fontSize: 12,
+          }}
+        >
+          <span style={hudLabel}>Mirror for physical teleprompter</span>
+          <label
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+              fontSize: 12,
+              color: baseText,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={settings.mirror}
+              onChange={(e) =>
+                handleChangeSettings("mirror", e.target.checked)
+              }
+            />
+            <span>Mirror text</span>
+          </label>
+        </div>
+        {settings.mirror && (
+          <div style={{ fontSize: 11, color: faint, marginTop: 2 }}>
+            Use your display / OBS settings to mirror the canvas output when
+            using a glass teleprompter.
+          </div>
+        )}
+      </section>
     </main>
   );
 }
 
 /* ========= Page wrapper (SSR-safe) ========= */
-/** On the server, render nothing; on the client, render the full app. */
 export default function TeleprompterPage() {
   if (typeof window === "undefined") {
     return null;
   }
   return <TeleprompterInner />;
 }
+

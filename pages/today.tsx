@@ -40,14 +40,57 @@ const CONFIRM_QUESTION: Record<SourceKey, string> = {
   win: "Is this the WIN you want for today?",
 };
 
-// small helpers for shaping the lines into “future-you” language
-const stripBullets = (s: string) => s.replace(/^[-•\s]+/, "").trim();
+// removes leading bullets, dashes, or whitespace
+const stripBullets = (s: string) => s.replace(/^[•\-\s]+/, "").trim();
 
+/** Generic prefix helper for CSC / Gratitude / Actions */
 const forcePrefix = (line: string, prefix: string) => {
   const clean = stripBullets(line);
   const lower = clean.toLowerCase();
   if (lower.startsWith(prefix.toLowerCase())) return clean;
   return `${prefix} ${clean}`;
+};
+
+/** Remove duplicates & empty lines after normalisation */
+const dedupeStrings = (lines: string[]): string[] => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of lines) {
+    const s = stripBullets(raw).replace(/\s+/g, " ").trim();
+    if (!s) continue;
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
+};
+
+/** Prayer-specific normaliser – guarantees exactly one clean prefix */
+const normalizePrayerLine = (line: string): string => {
+  const clean = stripBullets(line);
+  const lower = clean.toLowerCase();
+
+  const patterns = [
+    "i pray for",
+    "i'm praying for",
+    "i am praying for",
+    "pray for",
+    "praying for",
+  ];
+
+  let body = clean;
+  for (const p of patterns) {
+    if (lower.startsWith(p)) {
+      body = clean.slice(p.length).trimStart();
+      break;
+    }
+  }
+
+  if (!body) {
+    return "I am praying for clarity and courage today.";
+  }
+  return `I am praying for ${body}`;
 };
 
 export default function TodayPage() {
@@ -208,14 +251,23 @@ export default function TodayPage() {
       const rawActions = normalizeArray(data.actionGuide || data.actions);
       const rawPrayers = normalizeArray(data.prayerList || data.prayers);
 
-      setCscItems(rawCSC.map((l) => forcePrefix(l, "I am")));
-      setGratefulItems(
+      const nextCSC = dedupeStrings(
+        rawCSC.map((l) => forcePrefix(l, "I am"))
+      );
+      const nextGrateful = dedupeStrings(
         rawGrateful.map((l) => forcePrefix(l, "I am grateful for"))
       );
-      setActionItems(rawActions.map((l) => forcePrefix(l, "Today I will")));
-      setPrayerItems(
-        rawPrayers.map((l) => forcePrefix(l, "I pray for"))
+      const nextActions = dedupeStrings(
+        rawActions.map((l) => forcePrefix(l, "Today I will"))
       );
+      const nextPrayers = dedupeStrings(
+        rawPrayers.map((l) => normalizePrayerLine(l))
+      );
+
+      setCscItems(nextCSC);
+      setGratefulItems(nextGrateful);
+      setActionItems(nextActions);
+      setPrayerItems(nextPrayers);
 
       setQuote(data.quote ? String(data.quote) : null);
 
@@ -256,17 +308,24 @@ export default function TodayPage() {
     ) {
       const parts: string[] = [];
 
-      if (cscItems[selCSC]) parts.push(cscItems[selCSC]);
-      if (gratefulItems[selGrateful])
-        parts.push(gratefulItems[selGrateful]);
-      if (actionItems[selAction]) parts.push(actionItems[selAction]);
-      if (prayerItems[selPrayer]) parts.push(prayerItems[selPrayer]);
+      if (cscItems[selCSC]) {
+        parts.push(`CSC: ${cscItems[selCSC]}`);
+      }
+      if (gratefulItems[selGrateful]) {
+        parts.push(`Grateful List: ${gratefulItems[selGrateful]}`);
+      }
+      if (actionItems[selAction]) {
+        parts.push(`Action Guide: ${actionItems[selAction]}`);
+      }
+      if (prayerItems[selPrayer]) {
+        parts.push(`Prayer List: ${prayerItems[selPrayer]}`);
+      }
 
       if (quote) {
-        parts.push(quote);
+        parts.push(`CSC Quote: ${quote}`);
       }
       if (bible && includeBible) {
-        parts.push(`${bible.text} — ${bible.ref}`);
+        parts.push(`Bible: ${bible.text} — ${bible.ref}`);
       }
 
       setFinalScript(parts.join("\n"));
@@ -323,9 +382,9 @@ export default function TodayPage() {
             <section className="how-to-box">
               <h2>How to use</h2>
               <p>
-                Choose one card below and write what&apos;s true for you
-                today — what&apos;s blocking you, what you&apos;re focused
-                on, what you&apos;re building, or today&apos;s win.
+                Choose one card below and write what&apos;s true for you today —
+                what&apos;s blocking you, what you&apos;re focused on, what
+                you&apos;re building, or today&apos;s win.
               </p>
               <p style={{ marginTop: "0.25rem" }}>
                 Then click <strong>Continue</strong>. Today&apos;s Future Me
@@ -336,16 +395,14 @@ export default function TodayPage() {
             <section className="entry-grid">
               <div
                 className={
-                  "entry-card " +
-                  (focusSource === "blocking" ? "active" : "")
+                  "entry-card " + (focusSource === "blocking" ? "active" : "")
                 }
                 onClick={() => setFocusSource("blocking")}
               >
                 <h2>BLOCKING</h2>
                 <p className="helper-text">
-                  What&apos;s dragging you down today? Be specific—what
-                  thought, feeling, or situation is costing time, peace,
-                  or confidence?
+                  What&apos;s dragging you down today? Be specific—what thought,
+                  feeling, or situation is costing time, peace, or confidence?
                 </p>
                 <textarea
                   value={blocking}
@@ -356,15 +413,14 @@ export default function TodayPage() {
 
               <div
                 className={
-                  "entry-card " +
-                  (focusSource === "focus" ? "active" : "")
+                  "entry-card " + (focusSource === "focus" ? "active" : "")
                 }
                 onClick={() => setFocusSource("focus")}
               >
                 <h2>FOCUS</h2>
                 <p className="helper-text">
-                  What keeps looping in your head today—stealing focus or
-                  peace? Be specific.
+                  What keeps looping in your head today—stealing focus or peace?
+                  Be specific.
                 </p>
                 <textarea
                   value={focus}
@@ -375,8 +431,7 @@ export default function TodayPage() {
 
               <div
                 className={
-                  "entry-card " +
-                  (focusSource === "building" ? "active" : "")
+                  "entry-card " + (focusSource === "building" ? "active" : "")
                 }
                 onClick={() => setFocusSource("building")}
               >
@@ -394,8 +449,7 @@ export default function TodayPage() {
 
               <div
                 className={
-                  "entry-card " +
-                  (focusSource === "win" ? "active" : "")
+                  "entry-card " + (focusSource === "win" ? "active" : "")
                 }
                 onClick={() => setFocusSource("win")}
               >
@@ -553,9 +607,9 @@ export default function TodayPage() {
             <section className="output-card">
               <h3>CSC (I Am – Future You)</h3>
               <small className="helper-text">
-                Three short “I am…” identity statements for who you are
-                becoming today, based on your FOCUS, what&apos;s BLOCKING
-                you, and what you&apos;re BUILDING.
+                Three short “I am…” identity statements for who you are becoming
+                today, based on your FOCUS, what&apos;s BLOCKING you, and
+                what you&apos;re BUILDING.
               </small>
               <div
                 className="choices-column"
@@ -578,9 +632,9 @@ export default function TodayPage() {
             <section className="output-card">
               <h3>Grateful List (Grateful For)</h3>
               <small className="helper-text">
-                Three “I am grateful for…” statements that directly support
-                your CSC “I am” identity and help you see the good inside
-                today&apos;s challenges.
+                Three “I am grateful for…” statements that directly support your
+                CSC “I am” identity and help you see the good inside today&apos;s
+                challenges.
               </small>
               <div
                 className="choices-column"
@@ -632,9 +686,9 @@ export default function TodayPage() {
             <section className="output-card">
               <h3>Prayer List (Pray For)</h3>
               <small className="helper-text">
-                Three short prayer intentions tying together today&apos;s
-                CSC, gratitude, and actions — asking for guidance,
-                strength, or clarity in very specific areas.
+                Three short prayer intentions tying together today&apos;s CSC,
+                gratitude, and actions — asking for guidance, strength, or
+                clarity in very specific areas.
               </small>
               <div
                 className="choices-column"
@@ -723,8 +777,8 @@ export default function TodayPage() {
                 margin: "0.35rem 0 0.6rem",
               }}
             >
-              This combines your CSC, gratitude, action, prayer, quote,
-              and verse so you can pin it, log it, or record it.
+              This combines your CSC, gratitude, action, prayer, quote, and
+              verse so you can pin it, log it, or record it.
             </p>
 
             <textarea
