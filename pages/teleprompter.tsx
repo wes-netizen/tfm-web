@@ -23,7 +23,7 @@ const bg = "radial-gradient(circle at top, #1f2937 0, #020617 55%, #000 100%)";
 type RecState = "idle" | "recording" | "paused" | "finished";
 
 type TeleSettings = {
-  wpm: number; // 80–150, default 105
+  wpm: number; // 80–150, default 115
   fontSize: number;
   lineHeight: number;
   mirror: boolean;
@@ -113,7 +113,7 @@ function TeleprompterInner() {
 
   const [script, setScript] = useState(DEFAULT_SCRIPT);
   const [settings, setSettings] = useState<TeleSettings>({
-    wpm: 105,
+    wpm: 115,
     fontSize: 32,
     lineHeight: 1.4,
     mirror: false,
@@ -126,6 +126,8 @@ function TeleprompterInner() {
 
   const [downloadUrl, setDownloadUrl] = useState<string>("");
   const [tcError, setTcError] = useState<string>("");
+
+  const [controlsOpen, setControlsOpen] = useState<boolean>(false);
 
   // DOM refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -174,7 +176,16 @@ function TeleprompterInner() {
       });
   }, []);
 
-  /* ========= Camera attach ========= */
+  /* ========= Camera attach / stop ========= */
+  const stopTracks = useCallback(() => {
+    if (!isBrowser) return;
+    const v = videoRef.current;
+    if (v && v.srcObject instanceof MediaStream) {
+      v.srcObject.getTracks().forEach((t) => t.stop());
+      v.srcObject = null;
+    }
+  }, []);
+
   const attachCamera = useCallback(async () => {
     if (!isBrowser || !videoRef.current) return;
 
@@ -187,21 +198,6 @@ function TeleprompterInner() {
     videoRef.current.srcObject = stream;
     await videoRef.current.play();
   }, [camId]);
-
-  useEffect(() => {
-    if (!isBrowser) return;
-    attachCamera().catch(() => {});
-  }, [attachCamera]);
-
-  /* ========= Stop camera tracks ========= */
-  const stopTracks = useCallback(() => {
-    if (!isBrowser) return;
-    const v = videoRef.current;
-    if (v && v.srcObject instanceof MediaStream) {
-      v.srcObject.getTracks().forEach((t) => t.stop());
-      v.srcObject = null;
-    }
-  }, []);
 
   /* ========= Drawing loop ========= */
   const drawFrame = useCallback(() => {
@@ -363,7 +359,14 @@ function TeleprompterInner() {
 
     ctx.restore();
     rafRef.current = requestAnimationFrame(drawFrame);
-  }, [lineMeta, recState, settings.wpm, settings.fontSize, settings.lineHeight, settings.mirror]);
+  }, [
+    lineMeta,
+    recState,
+    settings.wpm,
+    settings.fontSize,
+    settings.lineHeight,
+    settings.mirror,
+  ]);
 
   useEffect(() => {
     if (!isBrowser) return;
@@ -416,6 +419,9 @@ function TeleprompterInner() {
 
       const canvas = canvasRef.current;
       if (!canvas) throw new Error("Canvas not ready");
+
+      // Turn camera on only when we start recording
+      await attachCamera();
 
       const displayStream = canvas.captureStream(30);
 
@@ -471,6 +477,8 @@ function TeleprompterInner() {
         }
 
         setRecState("finished");
+        // ensure camera off after recording
+        stopTracks();
       };
 
       mr.start(250);
@@ -481,7 +489,7 @@ function TeleprompterInner() {
       stopMediaRecorder();
       setRecState("idle");
     }
-  }, [micId, recState, stopMediaRecorder, script]);
+  }, [attachCamera, micId, recState, script, stopMediaRecorder, stopTracks]);
 
   const handlePauseResume = useCallback(() => {
     if (!isBrowser) return;
@@ -604,9 +612,9 @@ function TeleprompterInner() {
           style={{ borderRadius: 8, objectFit: "contain" }}
         />
         <div>
-          <h1 style={{ margin: 0, fontSize: 20 }}>TFM Teleprompter</h1>
+          <h1 style={{ margin: 0, fontSize: 20 }}>Re-Enforce Alignment</h1>
           <div style={{ fontSize: 12, color: faint }}>
-            Line-by-line guidance with camera overlay
+            Read your Future Me script while the app records you.
           </div>
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
@@ -634,6 +642,28 @@ function TeleprompterInner() {
         </div>
       </header>
 
+      {/* Short how-to */}
+      <section
+        style={{
+          background: panel,
+          borderRadius: 14,
+          border: `1px solid ${border}`,
+          padding: 10,
+          marginBottom: 10,
+          fontSize: 13,
+        }}
+      >
+        <strong>How Re-Enforce Alignment works</strong>
+        <p style={{ marginTop: 4, marginBottom: 2, color: faint }}>
+          When your words are on the screen and you read them out loud while
+          being recorded, you deepen them into your subconscious.
+        </p>
+        <p style={{ margin: 0, color: faint }}>
+          Write it, see it, read it, say it, and you will hear it. This page
+          helps you build that repetition on camera.
+        </p>
+      </section>
+
       {/* Teleprompter full-width */}
       <section
         style={{
@@ -654,7 +684,9 @@ function TeleprompterInner() {
             marginBottom: 8,
           }}
         >
-          <div style={{ fontSize: 13, color: faint }}>Teleprompter Stage</div>
+          <div style={{ fontSize: 13, color: faint }}>
+            Re-Enforce Alignment Stage
+          </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button
               type="button"
@@ -817,7 +849,7 @@ function TeleprompterInner() {
           >
             <a
               href={downloadUrl}
-              download="tfm-session.mp4"
+              download="tfm-session.webm"
               style={{
                 padding: "6px 10px",
                 borderRadius: 999,
@@ -836,7 +868,7 @@ function TeleprompterInner() {
         )}
       </section>
 
-      {/* Script + settings BELOW teleprompter */}
+      {/* Script + settings BELOW teleprompter, collapsible */}
       <section
         style={{
           marginTop: 16,
@@ -849,178 +881,212 @@ function TeleprompterInner() {
           gap: 10,
         }}
       >
-        {/* Script editor */}
-        <div>
-          <div style={hudLabel}>Script</div>
-          <textarea
-            value={script}
-            onChange={(e) => setScript(e.target.value)}
-            rows={8}
-            style={{
-              marginTop: 4,
-              width: "100%",
-              borderRadius: 12,
-              border: `1px solid ${border}`,
-              background: "rgba(15,23,42,.9)",
-              color: baseText,
-              padding: 10,
-              fontSize: 14,
-              lineHeight: 1.5,
-              resize: "vertical",
-            }}
-            placeholder="Paste or type your script, one phrase per line."
-          />
-          <div
-            style={{
-              marginTop: 4,
-              fontSize: 11,
-              color: faint,
-              display: "flex",
-              justifyContent: "space-between",
-            }}
-          >
-            <span>
-              {lineMeta.lines.length} lines · {lineMeta.totalWords} words
-            </span>
-            <button
-              type="button"
-              onClick={() => setScript(DEFAULT_SCRIPT)}
-              style={{
-                border: "none",
-                background: "transparent",
-                color: "#93c5fd",
-                fontSize: 11,
-                cursor: "pointer",
-              }}
-            >
-              Reset sample
-            </button>
-          </div>
-        </div>
-
-        {/* WPM slider */}
-        <div>
-          <div
-            style={{
-              ...hudLabel,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <span>Scroll speed (WPM)</span>
-            <span style={{ fontSize: 11, color: baseText }}>
-              {settings.wpm} wpm
-            </span>
-          </div>
-          <input
-            type="range"
-            min={80}
-            max={150}
-            step={1}
-            value={settings.wpm}
-            onChange={(e) =>
-              handleChangeSettings("wpm", Number(e.target.value) || 105)
-            }
-            style={sliderStyle}
-          />
-        </div>
-
-        {/* Font size */}
-        <div>
-          <div
-            style={{
-              ...hudLabel,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <span>Font size</span>
-            <span style={{ fontSize: 11, color: baseText }}>
-              {settings.fontSize}px
-            </span>
-          </div>
-          <input
-            type="range"
-            min={22}
-            max={44}
-            step={1}
-            value={settings.fontSize}
-            onChange={(e) =>
-              handleChangeSettings("fontSize", Number(e.target.value) || 32)
-            }
-            style={sliderStyle}
-          />
-        </div>
-
-        {/* Line height */}
-        <div>
-          <div
-            style={{
-              ...hudLabel,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <span>Line spacing</span>
-            <span style={{ fontSize: 11, color: baseText }}>
-              {settings.lineHeight.toFixed(2)}x
-            </span>
-          </div>
-          <input
-            type="range"
-            min={120}
-            max={180}
-            step={5}
-            value={Math.round(settings.lineHeight * 100)}
-            onChange={(e) =>
-              handleChangeSettings(
-                "lineHeight",
-                Number(e.target.value) / 100 || 1.4
-              )
-            }
-            style={sliderStyle}
-          />
-        </div>
-
-        {/* Mirror toggle */}
         <div
           style={{
-            marginTop: 4,
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            fontSize: 12,
           }}
         >
-          <span style={hudLabel}>Mirror for physical teleprompter</span>
-          <label
+          <div style={{ ...hudLabel, textTransform: "none", fontSize: 13 }}>
+            Script & Settings
+          </div>
+          <button
+            type="button"
+            onClick={() => setControlsOpen((v) => !v)}
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              cursor: "pointer",
-              fontSize: 12,
+              fontSize: 11,
+              padding: "4px 10px",
+              borderRadius: 999,
+              border: `1px solid ${border}`,
+              background: "transparent",
               color: baseText,
+              cursor: "pointer",
             }}
           >
-            <input
-              type="checkbox"
-              checked={settings.mirror}
-              onChange={(e) =>
-                handleChangeSettings("mirror", e.target.checked)
-              }
-            />
-            <span>Mirror text</span>
-          </label>
+            {controlsOpen ? "Hide" : "Show"}
+          </button>
         </div>
-        {settings.mirror && (
-          <div style={{ fontSize: 11, color: faint, marginTop: 2 }}>
-            Use your display / OBS settings to mirror the canvas output when
-            using a glass teleprompter.
-          </div>
+
+        {controlsOpen && (
+          <>
+            {/* Script editor */}
+            <div>
+              <div style={hudLabel}>Script</div>
+              <textarea
+                value={script}
+                onChange={(e) => setScript(e.target.value)}
+                rows={8}
+                style={{
+                  marginTop: 4,
+                  width: "100%",
+                  borderRadius: 12,
+                  border: `1px solid ${border}`,
+                  background: "rgba(15,23,42,.9)",
+                  color: baseText,
+                  padding: 10,
+                  fontSize: 14,
+                  lineHeight: 1.5,
+                  resize: "vertical",
+                }}
+                placeholder="Paste or type your script, one phrase per line."
+              />
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 11,
+                  color: faint,
+                  display: "flex",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span>
+                  {lineMeta.lines.length} lines · {lineMeta.totalWords} words
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setScript(DEFAULT_SCRIPT)}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "#93c5fd",
+                    fontSize: 11,
+                    cursor: "pointer",
+                  }}
+                >
+                  Reset sample
+                </button>
+              </div>
+            </div>
+
+            {/* WPM slider */}
+            <div>
+              <div
+                style={{
+                  ...hudLabel,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <span>Scroll speed (WPM)</span>
+                <span style={{ fontSize: 11, color: baseText }}>
+                  {settings.wpm} wpm
+                </span>
+              </div>
+              <input
+                type="range"
+                min={80}
+                max={150}
+                step={1}
+                value={settings.wpm}
+                onChange={(e) =>
+                  handleChangeSettings("wpm", Number(e.target.value) || 115)
+                }
+                style={sliderStyle}
+              />
+            </div>
+
+            {/* Font size */}
+            <div>
+              <div
+                style={{
+                  ...hudLabel,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <span>Font size</span>
+                <span style={{ fontSize: 11, color: baseText }}>
+                  {settings.fontSize}px
+                </span>
+              </div>
+              <input
+                type="range"
+                min={22}
+                max={44}
+                step={1}
+                value={settings.fontSize}
+                onChange={(e) =>
+                  handleChangeSettings(
+                    "fontSize",
+                    Number(e.target.value) || 32
+                  )
+                }
+                style={sliderStyle}
+              />
+            </div>
+
+            {/* Line height */}
+            <div>
+              <div
+                style={{
+                  ...hudLabel,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <span>Line spacing</span>
+                <span style={{ fontSize: 11, color: baseText }}>
+                  {settings.lineHeight.toFixed(2)}x
+                </span>
+              </div>
+              <input
+                type="range"
+                min={120}
+                max={180}
+                step={5}
+                value={Math.round(settings.lineHeight * 100)}
+                onChange={(e) =>
+                  handleChangeSettings(
+                    "lineHeight",
+                    Number(e.target.value) / 100 || 1.4
+                  )
+                }
+                style={sliderStyle}
+              />
+            </div>
+
+            {/* Mirror toggle */}
+            <div
+              style={{
+                marginTop: 4,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                fontSize: 12,
+              }}
+            >
+              <span style={hudLabel}>Mirror for physical teleprompter</span>
+              <label
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  cursor: "pointer",
+                  fontSize: 12,
+                  color: baseText,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={settings.mirror}
+                  onChange={(e) =>
+                    handleChangeSettings("mirror", e.target.checked)
+                  }
+                />
+                <span>Mirror text</span>
+              </label>
+            </div>
+            {settings.mirror && (
+              <div style={{ fontSize: 11, color: faint, marginTop: 2 }}>
+                Use your display / OBS settings to mirror the canvas output when
+                using a glass teleprompter.
+              </div>
+            )}
+          </>
         )}
       </section>
     </main>
@@ -1034,5 +1100,6 @@ export default function TeleprompterPage() {
   }
   return <TeleprompterInner />;
 }
+
 
 
