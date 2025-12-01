@@ -2,6 +2,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import OpenAI from "openai";
 import { TFM_CSC_COACH_PROMPT } from "../../../lib/tfmCscCoachPrompt";
+import { prisma } from "../../../lib/prisma";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -145,7 +146,7 @@ Remember: output **must** be valid JSON that exactly matches the structure above
         },
         {
           role: "user",
-          content: prompt, // your existing JSON instructions + bibleInstruction, etc.
+          content: prompt,
         },
       ],
     });
@@ -173,6 +174,46 @@ Remember: output **must** be valid JSON that exactly matches the structure above
       quote: parsed.quote || "",
       bible,
     };
+
+    // --- Log this generated script into JournalEntry ---
+    try {
+      const userId =
+        (req as any).user?.id ||
+        (req as any).session?.user?.id ||
+        "anonymous";
+
+      const scriptLines = [
+        out.coach || "",
+        ...(out.csc || []),
+        ...(out.gratefulList || []),
+        ...(out.actionGuide || []),
+        ...(out.prayerList || []),
+        out.quote || "",
+        out.bible?.text ? `${out.bible.text} — ${out.bible.ref || ""}` : "",
+      ].filter(Boolean) as string[];
+
+      await prisma.journalEntry.create({
+        data: {
+          userId,
+          source: body.focusSection || "building",
+          rawEntry: entry,
+          script: scriptLines.join("\n"),
+
+          coachText: out.coach || "",
+          quote: out.quote || "",
+          bibleText: out.bible?.text || null,
+          bibleRef: out.bible?.ref || null,
+
+          csc: out.csc || [],
+          gratefulList: out.gratefulList || [],
+          actionGuide: out.actionGuide || [],
+          prayerList: out.prayerList || [],
+        },
+      });
+    } catch (logErr) {
+      console.error("JournalEntry log error:", logErr);
+    }
+    // --- End logging ---
 
     return res.status(200).json(out);
   } catch (err: any) {
