@@ -1,6 +1,7 @@
 // pages/api/entries/generate.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import OpenAI from "openai";
+import { TFM_CSC_COACH_PROMPT } from "../../../lib/tfmCscCoachPrompt";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -140,10 +141,12 @@ Remember: output **must** be valid JSON that exactly matches the structure above
       messages: [
         {
           role: "system",
-          content:
-            "You are a concise journaling co-pilot for the Today's Future Me app.",
+          content: TFM_CSC_COACH_PROMPT,
         },
-        { role: "user", content: prompt },
+        {
+          role: "user",
+          content: prompt, // your existing JSON instructions + bibleInstruction, etc.
+        },
       ],
     });
 
