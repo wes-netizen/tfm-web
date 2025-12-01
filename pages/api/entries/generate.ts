@@ -175,7 +175,7 @@ Remember: output **must** be valid JSON that exactly matches the structure above
       bible,
     };
 
-    // --- Log this generated script into JournalEntry ---
+    // --- Log this generated script into JournalEntry (no JSON fields written) ---
     try {
       const userId =
         (req as any).user?.id ||
@@ -198,16 +198,10 @@ Remember: output **must** be valid JSON that exactly matches the structure above
           source: body.focusSection || "building",
           rawEntry: entry,
           script: scriptLines.join("\n"),
-
           coachText: out.coach || "",
           quote: out.quote || "",
           bibleText: out.bible?.text || null,
           bibleRef: out.bible?.ref || null,
-
-          csc: out.csc || [],
-          gratefulList: out.gratefulList || [],
-          actionGuide: out.actionGuide || [],
-          prayerList: out.prayerList || [],
         },
       });
     } catch (logErr) {
