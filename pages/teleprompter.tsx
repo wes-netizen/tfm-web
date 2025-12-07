@@ -34,53 +34,53 @@ type TeleSettings = {
 const isBrowser = typeof window !== "undefined";
 
 const DEFAULT_SCRIPT =
-  "Today, I choose to create my future with intention.\n" +
-  "I give myself permission to be honest about what is blocking me.\n" +
-  "I speak with courage, clarity, and compassion—first to myself, then to others.\n" +
-  "Every word I say here is a seed for Today’s Future Me.";
+  "CSC: I am choosing to create my future with intention today.\n" +
+  "Grateful List: I am grateful for the chance to grow and reset.\n" +
+  "Action Guide: Today I will finish one small task that moves me forward.\n" +
+  "Prayer List: I pray for focus, courage, and clarity as I build.\n" +
+  "CSC Quote: Big futures are built on daily finished tasks, not vague ideas.";
 
 function countWords(s: string): number {
   const m = s.match(/\b[\w’'-]+\b/gi);
   return m ? m.length : 0;
 }
 
-/** Wrap long logical lines into more readable chunks (so quotes don’t run off screen) */
-function wrapLines(logicalLines: string[], maxChars = 60): string[] {
-  const out: string[] = [];
-  for (const raw of logicalLines) {
-    const line = raw.trim();
-    if (!line) continue;
+/** Wrap overly long lines (so CSC Quote doesn’t run off the edge). */
+function wrapScriptLines(raw: string, maxChars = 80): string {
+  const lines = raw.split(/\r?\n/);
+  const wrapped: string[] = [];
 
-    if (line.length <= maxChars) {
-      out.push(line);
+  for (const line of lines) {
+    const trimmed = line.trimEnd();
+    if (trimmed.length <= maxChars) {
+      wrapped.push(trimmed);
       continue;
     }
 
-    const words = line.split(/\s+/);
+    const words = trimmed.split(/\s+/);
     let current = "";
+
     for (const w of words) {
-      if (!current) {
+      const next = current ? `${current} ${w}` : w;
+      if (next.length > maxChars) {
+        if (current) wrapped.push(current);
         current = w;
-      } else if ((current + " " + w).length <= maxChars) {
-        current += " " + w;
       } else {
-        out.push(current);
-        current = w;
+        current = next;
       }
     }
-    if (current) out.push(current);
+    if (current) wrapped.push(current);
   }
-  return out;
+
+  return wrapped.join("\n");
 }
 
 /** Build line meta so we can highlight by line while timing by words */
 function buildLineMeta(script: string) {
-  const logicalLines = script
+  const rawLines = script
     .split(/\r?\n/)
     .map((l) => l.trimEnd())
     .filter((l) => l.length > 0);
-
-  const rawLines = wrapLines(logicalLines, 60);
 
   if (!rawLines.length) {
     return {
@@ -142,11 +142,11 @@ const sliderStyle: CSSProperties = {
 function TeleprompterInner() {
   const router = useRouter();
 
-  const [script, setScript] = useState(DEFAULT_SCRIPT);
+  const [script, setScript] = useState(() => wrapScriptLines(DEFAULT_SCRIPT));
   const [settings, setSettings] = useState<TeleSettings>({
     wpm: 115,
-    fontSize: 40, // bigger default for easier reading
-    lineHeight: 1.45,
+    fontSize: 36, // slightly larger by default
+    lineHeight: 1.4,
     mirror: false,
     autoStart: false,
   });
@@ -170,6 +170,9 @@ function TeleprompterInner() {
   const recordedBlobsRef = useRef<Blob[]>([]);
   const recordedBlobRef = useRef<Blob | null>(null);
 
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const displayStreamRef = useRef<MediaStream | null>(null);
+
   const startTsRef = useRef<number>(0);
   const pauseOffsetRef = useRef<number>(0);
   const lastPauseStartRef = useRef<number | null>(null);
@@ -183,7 +186,7 @@ function TeleprompterInner() {
     try {
       const stored = window.localStorage.getItem("tfm_script");
       if (stored && stored.trim()) {
-        setScript(stored);
+        setScript(wrapScriptLines(stored));
       }
     } catch {
       // ignore
@@ -220,28 +223,21 @@ function TeleprompterInner() {
   const attachCamera = useCallback(async () => {
     if (!isBrowser || !videoRef.current) return;
 
-    try {
-      const constraints: MediaStreamConstraints = {
-        video: camId ? { deviceId: { exact: camId } } : true,
-        audio: false,
-      };
+    const constraints: MediaStreamConstraints = {
+      video: camId ? { deviceId: { exact: camId } } : true,
+      audio: false,
+    };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      videoRef.current.srcObject = stream;
-      await videoRef.current.play();
-    } catch (err: any) {
-      console.error("camera error:", err);
-      throw new Error(
-        "Unable to access camera. Check browser permissions and HTTPS connection."
-      );
-    }
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoRef.current.srcObject = stream;
+    await videoRef.current.play();
   }, [camId]);
 
   /* ========= Drawing loop ========= */
   const drawFrame = useCallback(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
-    if (!canvas) return;
+    if (!canvas || !video) return;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -291,14 +287,14 @@ function TeleprompterInner() {
     ctx.fillRect(0, 0, width, height);
 
     // Camera PIP (top-right)
-    if (video && video.readyState >= 2 && video.srcObject) {
-      const pipWidth = Math.floor(width * 0.22);
-      const pipHeight = Math.floor(height * 0.27);
-      const pipMarginX = 24;
-      const pipMarginY = 24;
-      const pipX = settings.mirror ? pipMarginX : width - pipWidth - pipMarginX;
-      const pipY = pipMarginY;
+    const pipWidth = Math.floor(width * 0.22);
+    const pipHeight = Math.floor(height * 0.27);
+    const pipMarginX = 24;
+    const pipMarginY = 24;
+    const pipX = settings.mirror ? pipMarginX : width - pipWidth - pipMarginX;
+    const pipY = pipMarginY;
 
+    if (video.readyState >= 2) {
       ctx.save();
       ctx.beginPath();
       const radius = 18;
@@ -360,7 +356,7 @@ function TeleprompterInner() {
 
     if (maxLineWidth > maxAllowedWidth && maxLineWidth > 0) {
       const ratio = maxAllowedWidth / maxLineWidth;
-      effectiveFontSize = Math.max(18, Math.floor(rawFontSize * ratio));
+      effectiveFontSize = Math.max(16, Math.floor(rawFontSize * ratio));
     }
 
     const lineGap = effectiveFontSize * settings.lineHeight;
@@ -397,7 +393,14 @@ function TeleprompterInner() {
 
     ctx.restore();
     rafRef.current = requestAnimationFrame(drawFrame);
-  }, [lineMeta, recState, settings.wpm, settings.fontSize, settings.lineHeight, settings.mirror]);
+  }, [
+    lineMeta,
+    recState,
+    settings.wpm,
+    settings.fontSize,
+    settings.lineHeight,
+    settings.mirror,
+  ]);
 
   useEffect(() => {
     if (!isBrowser) return;
@@ -415,6 +418,14 @@ function TeleprompterInner() {
         }
         mediaRecorderRef.current = null;
       }
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach((t) => t.stop());
+        audioStreamRef.current = null;
+      }
+      if (displayStreamRef.current) {
+        displayStreamRef.current.getTracks().forEach((t) => t.stop());
+        displayStreamRef.current = null;
+      }
     };
   }, [drawFrame, stopTracks]);
 
@@ -428,12 +439,30 @@ function TeleprompterInner() {
       }
       mediaRecorderRef.current = null;
     }
+
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach((t) => t.stop());
+      audioStreamRef.current = null;
+    }
+    if (displayStreamRef.current) {
+      displayStreamRef.current.getTracks().forEach((t) => t.stop());
+      displayStreamRef.current = null;
+    }
+
+    // also stop camera preview
     stopTracks();
   }, [stopTracks]);
 
   const handleStart = useCallback(async () => {
     if (!isBrowser || recState === "recording") return;
     setTcError("");
+
+    if (typeof (window as any).MediaRecorder === "undefined") {
+      setTcError(
+        "Recording is not supported in this browser. Teleprompter will still scroll your script."
+      );
+      return;
+    }
 
     try {
       setDownloadUrl((prev) => {
@@ -454,6 +483,7 @@ function TeleprompterInner() {
       await attachCamera();
 
       const displayStream = canvas.captureStream(30);
+      displayStreamRef.current = displayStream;
 
       const audioConstraints: MediaStreamConstraints = {
         audio: micId ? { deviceId: { exact: micId } } : true,
@@ -462,6 +492,7 @@ function TeleprompterInner() {
       const audioStream = await navigator.mediaDevices.getUserMedia(
         audioConstraints
       );
+      audioStreamRef.current = audioStream;
 
       const fullStream = new MediaStream();
       displayStream.getVideoTracks().forEach((t) => fullStream.addTrack(t));
@@ -480,6 +511,16 @@ function TeleprompterInner() {
 
       mr.onstop = () => {
         fullStream.getTracks().forEach((t) => t.stop());
+
+        if (audioStreamRef.current) {
+          audioStreamRef.current.getTracks().forEach((t) => t.stop());
+          audioStreamRef.current = null;
+        }
+        if (displayStreamRef.current) {
+          displayStreamRef.current.getTracks().forEach((t) => t.stop());
+          displayStreamRef.current = null;
+        }
+
         const blob = new Blob(recordedBlobsRef.current, {
           type: "video/webm",
         });
@@ -507,6 +548,7 @@ function TeleprompterInner() {
         }
 
         setRecState("finished");
+        // ensure camera off after recording
         stopTracks();
       };
 
@@ -514,7 +556,6 @@ function TeleprompterInner() {
       mediaRecorderRef.current = mr;
       setRecState("recording");
     } catch (e: any) {
-      console.error(e);
       setTcError(e?.message || "Unable to start recording");
       stopMediaRecorder();
       setRecState("idle");
@@ -523,16 +564,15 @@ function TeleprompterInner() {
 
   const handlePauseResume = useCallback(() => {
     if (!isBrowser) return;
-    const mr = mediaRecorderRef.current;
-    if (!mr) return;
+    if (!mediaRecorderRef.current) return;
 
-    if (recState === "recording" && mr.state === "recording") {
-      mr.pause();
+    if (recState === "recording") {
+      mediaRecorderRef.current.pause();
       setRecState("paused");
       lastPauseStartRef.current =
         typeof performance !== "undefined" ? performance.now() : Date.now();
-    } else if (recState === "paused" && mr.state === "paused") {
-      mr.resume();
+    } else if (recState === "paused") {
+      mediaRecorderRef.current.resume();
       setRecState("recording");
       if (lastPauseStartRef.current != null) {
         const now =
@@ -546,23 +586,19 @@ function TeleprompterInner() {
   const handleStop = useCallback(() => {
     if (!isBrowser) return;
 
-    // if never started, just ensure camera is off
-    if (recState === "idle") {
-      stopTracks();
-      return;
-    }
-
     if (!mediaRecorderRef.current) {
-      // nothing to stop, but still mark as finished so user can move on
-      stopTracks();
-      setRecState("finished");
+      // No recorder, but still stop camera/mic if they are live
+      stopMediaRecorder();
+      setRecState("idle");
       return;
     }
 
     stopMediaRecorder();
-  }, [recState, stopMediaRecorder, stopTracks]);
+    // onstop handler will set recState("finished")
+  }, [stopMediaRecorder]);
 
   const handleResetRecording = useCallback(() => {
+    // stop any active recording first
     if (mediaRecorderRef.current) {
       try {
         mediaRecorderRef.current.stop();
@@ -572,8 +608,10 @@ function TeleprompterInner() {
       mediaRecorderRef.current = null;
     }
 
-    stopTracks();
+    // stop camera + audio
+    stopMediaRecorder();
 
+    // clear download URL
     setDownloadUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return "";
@@ -581,6 +619,7 @@ function TeleprompterInner() {
 
     setTcError("");
 
+    // reset buffers / timing
     recordedBlobsRef.current = [];
     recordedBlobRef.current = null;
 
@@ -588,8 +627,9 @@ function TeleprompterInner() {
     pauseOffsetRef.current = 0;
     lastPauseStartRef.current = null;
 
+    // back to idle state
     setRecState("idle");
-  }, [stopTracks]);
+  }, [stopMediaRecorder]);
 
   /* ========= Auto-start ========= */
   useEffect(() => {
@@ -659,7 +699,7 @@ function TeleprompterInner() {
           <button
             type="button"
             onClick={() => {
-              stopTracks();
+              stopMediaRecorder();
               router.push("/today");
             }}
             style={{
@@ -688,14 +728,10 @@ function TeleprompterInner() {
           fontSize: 13,
         }}
       >
-        <strong>How Re-Enforce Alignment works</strong>
+        <strong>How this page works</strong>
         <p style={{ marginTop: 4, marginBottom: 2, color: faint }}>
-          When your words are on the screen and you read them out loud while
-          being recorded, you deepen them into your subconscious.
-        </p>
-        <p style={{ margin: 0, color: faint }}>
-          Write it, see it, read it, say it, and you will hear it. This page
-          helps you build that repetition on camera.
+          Your words scroll in front of you while the camera records. Each
+          session is one rep of alignment with your Future Me.
         </p>
       </section>
 
@@ -779,6 +815,7 @@ function TeleprompterInner() {
               display: "block",
             }}
           />
+          {/* Hidden raw video; we draw it into the canvas */}
           <video ref={videoRef} muted playsInline style={{ display: "none" }} />
         </div>
 
@@ -855,7 +892,7 @@ function TeleprompterInner() {
           )}
           {recState === "finished" && (
             <span style={{ fontSize: 12, color: teal }}>
-              Session finished. Review and log below.
+              Session complete. Review below.
             </span>
           )}
         </div>
@@ -872,130 +909,89 @@ function TeleprompterInner() {
           </div>
         )}
 
-        {downloadUrl && (
+        {/* Completion summary & download */}
+        {recState === "finished" && (
           <div
             style={{
               marginTop: 10,
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 10,
-              alignItems: "center",
+              padding: 10,
+              borderRadius: 12,
+              border: `1px solid ${border}`,
+              background: "rgba(15,23,42,.9)",
+              fontSize: 12,
             }}
           >
-            <a
-              href={downloadUrl}
-              download="tfm-session.webm"
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: `1px solid ${border}`,
-                fontSize: 12,
-                color: baseText,
-                textDecoration: "none",
-              }}
-            >
-              Download video
-            </a>
-            <span style={{ fontSize: 11, color: faint }}>
-              (Also saved to local video history)
-            </span>
-          </div>
-        )}
-      </section>
-
-      {/* Completion card when session is finished */}
-      {recState === "finished" && (
-        <section
-          style={{
-            marginTop: 16,
-            background: panel,
-            borderRadius: 18,
-            border: `1px solid ${border}`,
-            padding: 12,
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-          }}
-        >
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>
-              Session complete
-            </div>
+            <strong style={{ display: "block", marginBottom: 4 }}>
+              Today&apos;s alignment rep is done.
+            </strong>
             <p
               style={{
-                margin: "4px 0 0",
-                fontSize: 12,
+                margin: "4px 0 8px",
                 color: faint,
               }}
             >
-              Your script has been logged to local video history. You can
-              download the recording, re-record, or head back to Today&apos;s
-              Future Me.
+              You just spoke your CSC, gratitude, actions, and prayer out loud.
+              Download the video if you want to review your delivery, or come
+              back tomorrow and stack another proof for your Future Me.
             </p>
-          </div>
-
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 8,
-              marginTop: 6,
-            }}
-          >
-            {downloadUrl && (
-              <a
-                href={downloadUrl}
-                download="tfm-session.webm"
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                alignItems: "center",
+              }}
+            >
+              {downloadUrl && (
+                <a
+                  href={downloadUrl}
+                  download="tfm-session.webm"
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: 999,
+                    border: `1px solid ${border}`,
+                    fontSize: 12,
+                    color: baseText,
+                    textDecoration: "none",
+                  }}
+                >
+                  Download video
+                </a>
+              )}
+              <button
+                type="button"
+                onClick={() => router.push("/history")}
                 style={{
-                  padding: "6px 12px",
+                  padding: "6px 10px",
                   borderRadius: 999,
                   border: `1px solid ${border}`,
-                  fontSize: 12,
+                  background: "transparent",
                   color: baseText,
-                  textDecoration: "none",
+                  fontSize: 12,
+                  cursor: "pointer",
                 }}
               >
-                Download &amp; keep video
-              </a>
-            )}
-
-            <button
-              type="button"
-              onClick={() => {
-                // script already logged in localStorage
-                router.push("/today");
-              }}
-              style={{
-                padding: "6px 12px",
-                borderRadius: 999,
-                border: `1px solid ${border}`,
-                background: "transparent",
-                color: baseText,
-                fontSize: 12,
-                cursor: "pointer",
-              }}
-            >
-              Log &amp; close (back to Today)
-            </button>
-
-            <button
-              type="button"
-              onClick={handleResetRecording}
-              style={{
-                padding: "6px 12px",
-                borderRadius: 999,
-                border: `1px solid ${border}`,
-                background: "transparent",
-                color: baseText,
-                fontSize: 12,
-                cursor: "pointer",
-              }}
-            >
-              Re-record session
-            </button>
+                View history
+              </button>
+              <button
+                type="button"
+                onClick={handleResetRecording}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: `1px solid ${border}`,
+                  background: "transparent",
+                  color: baseText,
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                Record again
+              </button>
+            </div>
           </div>
-        </section>
-      )}
+        )}
+      </section>
 
       {/* Script + settings BELOW teleprompter, collapsible */}
       <section
@@ -1018,7 +1014,7 @@ function TeleprompterInner() {
           }}
         >
           <div style={{ ...hudLabel, textTransform: "none", fontSize: 13 }}>
-            Script &amp; Settings
+            Script & Settings
           </div>
           <button
             type="button"
@@ -1044,7 +1040,9 @@ function TeleprompterInner() {
               <div style={hudLabel}>Script</div>
               <textarea
                 value={script}
-                onChange={(e) => setScript(e.target.value)}
+                onChange={(e) =>
+                  setScript(wrapScriptLines(e.target.value))
+                }
                 rows={8}
                 style={{
                   marginTop: 4,
@@ -1074,7 +1072,7 @@ function TeleprompterInner() {
                 </span>
                 <button
                   type="button"
-                  onClick={() => setScript(DEFAULT_SCRIPT)}
+                  onClick={() => setScript(wrapScriptLines(DEFAULT_SCRIPT))}
                   style={{
                     border: "none",
                     background: "transparent",
@@ -1134,13 +1132,13 @@ function TeleprompterInner() {
               <input
                 type="range"
                 min={26}
-                max={52}
+                max={48}
                 step={1}
                 value={settings.fontSize}
                 onChange={(e) =>
                   handleChangeSettings(
                     "fontSize",
-                    Number(e.target.value) || 40
+                    Number(e.target.value) || 36
                   )
                 }
                 style={sliderStyle}
@@ -1164,14 +1162,14 @@ function TeleprompterInner() {
               </div>
               <input
                 type="range"
-                min={125}
-                max={185}
+                min={120}
+                max={180}
                 step={5}
                 value={Math.round(settings.lineHeight * 100)}
                 onChange={(e) =>
                   handleChangeSettings(
                     "lineHeight",
-                    Number(e.target.value) / 100 || 1.45
+                    Number(e.target.value) / 100 || 1.4
                   )
                 }
                 style={sliderStyle}
@@ -1209,12 +1207,6 @@ function TeleprompterInner() {
                 <span>Mirror text</span>
               </label>
             </div>
-            {settings.mirror && (
-              <div style={{ fontSize: 11, color: faint, marginTop: 2 }}>
-                Use your display / OBS settings to mirror the canvas output when
-                using a glass teleprompter.
-              </div>
-            )}
           </>
         )}
       </section>
