@@ -13,6 +13,7 @@ export default function HistoryPage() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [detail, setDetail] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -23,11 +24,15 @@ export default function HistoryPage() {
         if (json.error) {
           setError(json.error);
         }
+        if (json.detail) {
+          setDetail(json.detail);
+        }
 
         setEntries(json.entries || []);
       } catch (e: any) {
         console.error(e);
-        setError(e?.message || "Failed to load history.");
+        setError("Failed to load history.");
+        setDetail(e?.message || String(e));
       } finally {
         setLoading(false);
       }
@@ -50,14 +55,16 @@ export default function HistoryPage() {
       </h1>
 
       {error && (
-        <p className="text-xs text-rose-300">
-          {error}
-        </p>
+        <div className="text-xs text-rose-300 space-y-1">
+          <p>{error}</p>
+          {detail && <p className="text-[10px] text-rose-400/70">{detail}</p>}
+        </div>
       )}
 
       {entries.length === 0 && !error && (
         <p className="text-sm text-slate-400">
-          No entries found yet. Complete a Today&apos;s Future Me session and log it to see it here.
+          No entries found yet. Complete a Today&apos;s Future Me session and
+          tap <strong>Wrote in Journal, Log &amp; Close</strong> to see it here.
         </p>
       )}
 
@@ -72,9 +79,7 @@ export default function HistoryPage() {
             </div>
 
             {e.coachText && (
-              <p className="text-xs mb-2 text-emerald-300">
-                {e.coachText}
-              </p>
+              <p className="text-xs mb-2 text-emerald-300">{e.coachText}</p>
             )}
 
             {e.script && (
@@ -94,3 +99,4 @@ export default function HistoryPage() {
     </main>
   );
 }
+

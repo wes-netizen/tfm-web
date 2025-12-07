@@ -11,6 +11,7 @@ export default async function handler(
   }
 
   try {
+    // You don’t have auth wired yet – this matches generate.ts
     const userId =
       (req as any).user?.id ||
       (req as any).session?.user?.id ||
@@ -33,7 +34,7 @@ export default async function handler(
   } catch (err: any) {
     console.error("History error:", err);
 
-    // Don’t throw a 500 at the UI – return empty list with error info
+    // IMPORTANT: no HTTP 500 to the browser – just an empty list plus detail
     return res.status(200).json({
       entries: [],
       error: "Failed to load history",
