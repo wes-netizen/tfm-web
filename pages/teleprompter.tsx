@@ -252,7 +252,7 @@ function TeleprompterInner() {
     ctx.fillStyle = "black";
     ctx.fillRect(0, 0, width, height);
 
-    // Camera PIP (top-right, not mirrored visually because we mirror canvas)
+    // Camera PIP
     const pipWidth = Math.floor(width * 0.22);
     const pipHeight = Math.floor(height * 0.27);
     const pipMarginX = 24;
@@ -299,7 +299,7 @@ function TeleprompterInner() {
       ctx.strokeRect(pipX, pipY, pipWidth, pipHeight);
     }
 
-    // Teleprompter text (full width, centered, auto-fit)
+    // Teleprompter text
     const margin = 40;
     const rawFontSize = settings.fontSize;
     const lineGapBase = rawFontSize * settings.lineHeight;
@@ -307,7 +307,6 @@ function TeleprompterInner() {
     ctx.textBaseline = "top";
     ctx.textAlign = "center";
 
-    // First pass: compute max width at requested font size
     ctx.font =
       `${rawFontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
 
@@ -333,7 +332,6 @@ function TeleprompterInner() {
     const centerY = height / 2;
     const startY = centerY - currentLineIndex * lineGap - lineGap / 2;
 
-    // frame
     ctx.strokeStyle = "rgba(148,163,184,.35)";
     ctx.lineWidth = 1;
     ctx.strokeRect(margin / 2, margin / 2, width - margin, height - margin);
@@ -387,7 +385,8 @@ function TeleprompterInner() {
     };
   }, [drawFrame, stopTracks]);
 
-  /* ========= Recording ========= */
+  /* ========= Recording helpers ========= */
+
   const stopMediaRecorder = useCallback(() => {
     if (mediaRecorderRef.current) {
       try {
@@ -400,6 +399,31 @@ function TeleprompterInner() {
     // also stop camera preview
     stopTracks();
   }, [stopTracks]);
+
+  const logRecording = useCallback(
+    (label: string) => {
+      try {
+        if (typeof window !== "undefined") {
+          const raw = window.localStorage.getItem("tfm_video_history") || "[]";
+          const arr = JSON.parse(raw) as any[];
+          arr.push({
+            createdAt: new Date().toISOString(),
+            label,
+            script,
+          });
+          window.localStorage.setItem(
+            "tfm_video_history",
+            JSON.stringify(arr)
+          );
+        }
+      } catch {
+        // ignore
+      }
+    },
+    [script]
+  );
+
+  /* ========= Start / Pause / Stop ========= */
 
   const handleStart = useCallback(async () => {
     if (!isBrowser || recState === "recording") return;
@@ -458,24 +482,6 @@ function TeleprompterInner() {
         const url = URL.createObjectURL(blob);
         setDownloadUrl(url);
 
-        try {
-          if (typeof window !== "undefined") {
-            const raw =
-              window.localStorage.getItem("tfm_video_history") || "[]";
-            const arr = JSON.parse(raw) as any[];
-            arr.push({
-              createdAt: new Date().toISOString(),
-              script,
-            });
-            window.localStorage.setItem(
-              "tfm_video_history",
-              JSON.stringify(arr)
-            );
-          }
-        } catch {
-          // ignore
-        }
-
         setRecState("finished");
         // ensure camera off after recording
         stopTracks();
@@ -489,7 +495,7 @@ function TeleprompterInner() {
       stopMediaRecorder();
       setRecState("idle");
     }
-  }, [attachCamera, micId, recState, script, stopMediaRecorder, stopTracks]);
+  }, [attachCamera, micId, recState, stopMediaRecorder, stopTracks]);
 
   const handlePauseResume = useCallback(() => {
     if (!isBrowser) return;
@@ -555,6 +561,29 @@ function TeleprompterInner() {
     // back to idle state
     setRecState("idle");
   }, [stopTracks]);
+
+  /* ========= Post-stop actions ========= */
+
+  const handleDownloadAndLog = useCallback(() => {
+    if (!downloadUrl) return;
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = "tfm-session.webm";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    logRecording("Downloaded recording");
+  }, [downloadUrl, logRecording]);
+
+  const handleStoreOnly = useCallback(() => {
+    if (!recordedBlobRef.current) return;
+    logRecording("Stored recording");
+  }, [logRecording]);
+
+  const handleReRecord = useCallback(() => {
+    handleResetRecording();
+  }, [handleResetRecording]);
 
   /* ========= Auto-start ========= */
   useEffect(() => {
@@ -684,9 +713,7 @@ function TeleprompterInner() {
             marginBottom: 8,
           }}
         >
-          <div style={{ fontSize: 13, color: faint }}>
-            Re-Enforce Alignment Stage
-          </div>
+          <div style={{ fontSize: 13, color: faint }}>Re-Enforce Alignment Stage</div>
           <div style={{ display: "flex", gap: 8 }}>
             <button
               type="button"
@@ -820,7 +847,7 @@ function TeleprompterInner() {
           )}
           {recState === "finished" && (
             <span style={{ fontSize: 12, color: teal }}>
-              Finished. You can download below.
+              Finished. Choose what to do with this recording.
             </span>
           )}
         </div>
@@ -837,7 +864,8 @@ function TeleprompterInner() {
           </div>
         )}
 
-        {downloadUrl && (
+        {/* Post-recording actions */}
+        {recState === "finished" && downloadUrl && (
           <div
             style={{
               marginTop: 10,
@@ -847,23 +875,51 @@ function TeleprompterInner() {
               alignItems: "center",
             }}
           >
-            <a
-              href={downloadUrl}
-              download="tfm-session.webm"
+            <button
+              type="button"
+              onClick={handleDownloadAndLog}
               style={{
                 padding: "6px 10px",
                 borderRadius: 999,
                 border: `1px solid ${border}`,
                 fontSize: 12,
                 color: baseText,
-                textDecoration: "none",
+                background: "transparent",
+                cursor: "pointer",
               }}
             >
-              Download video
-            </a>
-            <span style={{ fontSize: 11, color: faint }}>
-              (Saved to local video history)
-            </span>
+              Download &amp; Log
+            </button>
+            <button
+              type="button"
+              onClick={handleStoreOnly}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: `1px solid ${border}`,
+                fontSize: 12,
+                color: baseText,
+                background: "transparent",
+                cursor: "pointer",
+              }}
+            >
+              Log &amp; Store (History)
+            </button>
+            <button
+              type="button"
+              onClick={handleReRecord}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: `1px solid ${border}`,
+                fontSize: 12,
+                color: baseText,
+                background: "transparent",
+                cursor: "pointer",
+              }}
+            >
+              Re-Record
+            </button>
           </div>
         )}
       </section>
@@ -1100,6 +1156,3 @@ export default function TeleprompterPage() {
   }
   return <TeleprompterInner />;
 }
-
-
-

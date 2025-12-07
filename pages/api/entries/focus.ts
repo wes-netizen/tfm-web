@@ -53,7 +53,7 @@ Rules:
         {
           role: "system",
           content:
-            "You are a concise focus-clarifying assistant for the Today's Future Me app.",
+            "You are the Focus Coach for Today's Future Me — short, clear, motivational. Your job is to take the user’s text and turn it into ONE sharp, specific focus line and ONE short explanation. Keep it simple, encouraging, and forward-moving.",
         },
         { role: "user", content: prompt },
       ],

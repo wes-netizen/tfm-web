@@ -65,24 +65,32 @@ model VerificationToken {
 }
 
 model JournalEntry {
-  id           String   @id @default(cuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id])
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
 
-  // which card it came from
-  source       String   // 'blocking' | 'focus' | 'building' | 'win'
-  rawEntry     String   // what they wrote in the card
-  script       String   // final combined script
-  coachText    String?  // coach paragraph
-  quote        String?
-  bibleText    String?
-  bibleRef     String?
+  source        String   // 'blocking' | 'focus' | 'building' | 'win'
 
-  futureCue    String?
-  dreamEcho    String?
+  rawEntry      String   // what they wrote in the card
+  script        String   // final combined script
+
+  // coach + content breakdown
+  coachText     String?
+  quote         String?
+  bibleText     String?
+  bibleRef      String?
+
+  // structured fields for log/history
+  csc           Json?
+  gratefulList  Json?
+  actionGuide   Json?
+  prayerList    Json?
+
+  futureCue     String?
+  dreamEcho     String?
   linkedEntryId String?
 
-  createdAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
 }
 
 model UserStats {

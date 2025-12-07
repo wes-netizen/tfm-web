@@ -365,6 +365,18 @@ export default function TodayPage() {
             </div>
           </div>
           <div className="header-right">
+            {/* NEW: History button */}
+            <button
+              type="button"
+              onClick={() => router.push("/history")}
+              style={{
+                fontSize: "0.7rem",
+                textDecoration: "underline",
+                marginRight: "0.75rem",
+              }}
+            >
+              History
+            </button>
             <small suppressHydrationWarning>{todayString}</small>
           </div>
         </div>

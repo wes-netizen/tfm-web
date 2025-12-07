@@ -29,6 +29,20 @@ type GenerateResponse = {
   bible?: { text: string; ref: string } | null;
 };
 
+// Helper to hard-limit text to a max number of words
+function trimToMaxWords(text: string | undefined, maxWords: number): string {
+  if (!text) return "";
+  const words = text.trim().split(/\s+/);
+  if (words.length <= maxWords) return text.trim();
+  return words.slice(0, maxWords).join(" ");
+}
+
+// Helper to trim all items in a string array
+function trimArrayToMaxWords(arr: string[] | undefined, maxWords: number): string[] {
+  if (!arr || !Array.isArray(arr)) return [];
+  return arr.map((line) => trimToMaxWords(line, maxWords));
+}
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
@@ -86,14 +100,15 @@ MODE:
 DETAILED RULES (very important):
 
 1) COACH PARAGRAPH ("coach")
-- 2–3 short sentences.
+- 1–2 very short sentences total.
+- Total length 8–12 words.
 - Speak directly to the user and what they wrote today.
-- End with this exact final sentence: "Consciously creating your future self."
+- End with a clear, forward-moving idea (no fluff).
 
 2) CSC ("csc")
 - EXACTLY 3 lines.
 - Each MUST start with "I am ".
-- 8–16 words per line.
+- 8–12 words per line.
 - Identity statements about who the user is becoming TODAY, based on their entry.
 - Directly reflect their FOCUS, what is BLOCKING them, and what they are BUILDING or WINNING at.
 - No generic fluff like "I am amazing" — use the real details and themes from the entry.
@@ -101,27 +116,28 @@ DETAILED RULES (very important):
 3) GRATEFUL LIST ("gratefulList")
 - EXACTLY 3 lines.
 - Each MUST start with "I am grateful for ".
-- 8–18 words per line.
+- 8–12 words per line.
 - Each line should consciously SUPPORT or REINFORCE one of the CSC "I am" identities.
 - Use specific people, opportunities, lessons, resources, or growth that appear (or are implied) in the entry.
 
 4) ACTION GUIDE ("actionGuide")
 - EXACTLY 3 lines.
 - Each MUST start with "Today I will ".
-- 10–20 words per line.
+- 8–12 words per line.
 - Realistic actions that can be taken TODAY.
 - Each action must move the user toward at least one CSC identity and be connected, where possible, to something they are grateful for.
 
 5) PRAYER LIST ("prayerList")
 - EXACTLY 3 lines.
 - Each MUST start with "I pray for " or "I'm praying for ".
-- 10–20 words per line.
+- 8–12 words per line.
 - Gently tie together CSC, gratitude, and actions: asking for help, guidance, courage, peace, or clarity in specific areas.
 - Warm, grounded, non-extreme spiritual tone (non-denominational, respectful).
 
 6) CSC COACH QUOTE ("quote")
 - ONE quote only.
-- 1–2 sentences total, 15–28 words.
+- 1–2 sentences total.
+- 15–28 words.
 - Should feel like a sticky line of wisdom that captures today's CSC, gratitude, actions, and prayers all together.
 - Avoid clichés like "never give up" unless they are clearly grounded in this specific entry.
 
@@ -162,20 +178,36 @@ Remember: output **must** be valid JSON that exactly matches the structure above
         ? parsed.bible || null
         : null;
 
+    // Enforce max 12 words for the main coaching lines
+    const trimmedCoach = trimToMaxWords(parsed.coach || "", 12);
+    const trimmedCsc = trimArrayToMaxWords(parsed.csc || [], 12);
+    const trimmedGratefulList = trimArrayToMaxWords(
+      parsed.gratefulList || parsed.grateful || [],
+      12
+    );
+    const trimmedActionGuide = trimArrayToMaxWords(
+      parsed.actionGuide || parsed.actions || [],
+      12
+    );
+    const trimmedPrayerList = trimArrayToMaxWords(
+      parsed.prayerList || parsed.prayers || [],
+      12
+    );
+
     const out: GenerateResponse = {
-      coach: parsed.coach || "",
-      csc: parsed.csc || [],
+      coach: trimmedCoach,
+      csc: trimmedCsc,
       grateful: parsed.grateful || undefined,
-      gratefulList: parsed.gratefulList || parsed.grateful || [],
+      gratefulList: trimmedGratefulList,
       actions: parsed.actions || undefined,
-      actionGuide: parsed.actionGuide || [],
+      actionGuide: trimmedActionGuide,
       prayers: parsed.prayers || undefined,
-      prayerList: parsed.prayerList || [],
+      prayerList: trimmedPrayerList,
       quote: parsed.quote || "",
       bible,
     };
 
-    // --- Log this generated script into JournalEntry (no JSON fields written) ---
+    // --- Log this generated script into JournalEntry ---
     try {
       const userId =
         (req as any).user?.id ||
