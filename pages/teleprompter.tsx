@@ -44,12 +44,43 @@ function countWords(s: string): number {
   return m ? m.length : 0;
 }
 
+/** Wrap long logical lines into more readable chunks (so quotes don’t run off screen) */
+function wrapLines(logicalLines: string[], maxChars = 60): string[] {
+  const out: string[] = [];
+  for (const raw of logicalLines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    if (line.length <= maxChars) {
+      out.push(line);
+      continue;
+    }
+
+    const words = line.split(/\s+/);
+    let current = "";
+    for (const w of words) {
+      if (!current) {
+        current = w;
+      } else if ((current + " " + w).length <= maxChars) {
+        current += " " + w;
+      } else {
+        out.push(current);
+        current = w;
+      }
+    }
+    if (current) out.push(current);
+  }
+  return out;
+}
+
 /** Build line meta so we can highlight by line while timing by words */
 function buildLineMeta(script: string) {
-  const rawLines = script
+  const logicalLines = script
     .split(/\r?\n/)
     .map((l) => l.trimEnd())
     .filter((l) => l.length > 0);
+
+  const rawLines = wrapLines(logicalLines, 60);
 
   if (!rawLines.length) {
     return {
@@ -114,8 +145,8 @@ function TeleprompterInner() {
   const [script, setScript] = useState(DEFAULT_SCRIPT);
   const [settings, setSettings] = useState<TeleSettings>({
     wpm: 115,
-    fontSize: 32,
-    lineHeight: 1.4,
+    fontSize: 40, // bigger default for easier reading
+    lineHeight: 1.45,
     mirror: false,
     autoStart: false,
   });
@@ -189,21 +220,28 @@ function TeleprompterInner() {
   const attachCamera = useCallback(async () => {
     if (!isBrowser || !videoRef.current) return;
 
-    const constraints: MediaStreamConstraints = {
-      video: camId ? { deviceId: { exact: camId } } : true,
-      audio: false,
-    };
+    try {
+      const constraints: MediaStreamConstraints = {
+        video: camId ? { deviceId: { exact: camId } } : true,
+        audio: false,
+      };
 
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    videoRef.current.srcObject = stream;
-    await videoRef.current.play();
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+    } catch (err: any) {
+      console.error("camera error:", err);
+      throw new Error(
+        "Unable to access camera. Check browser permissions and HTTPS connection."
+      );
+    }
   }, [camId]);
 
   /* ========= Drawing loop ========= */
   const drawFrame = useCallback(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
-    if (!canvas || !video) return;
+    if (!canvas) return;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -252,15 +290,15 @@ function TeleprompterInner() {
     ctx.fillStyle = "black";
     ctx.fillRect(0, 0, width, height);
 
-    // Camera PIP
-    const pipWidth = Math.floor(width * 0.22);
-    const pipHeight = Math.floor(height * 0.27);
-    const pipMarginX = 24;
-    const pipMarginY = 24;
-    const pipX = settings.mirror ? pipMarginX : width - pipWidth - pipMarginX;
-    const pipY = pipMarginY;
+    // Camera PIP (top-right)
+    if (video && video.readyState >= 2 && video.srcObject) {
+      const pipWidth = Math.floor(width * 0.22);
+      const pipHeight = Math.floor(height * 0.27);
+      const pipMarginX = 24;
+      const pipMarginY = 24;
+      const pipX = settings.mirror ? pipMarginX : width - pipWidth - pipMarginX;
+      const pipY = pipMarginY;
 
-    if (video.readyState >= 2) {
       ctx.save();
       ctx.beginPath();
       const radius = 18;
@@ -307,6 +345,7 @@ function TeleprompterInner() {
     ctx.textBaseline = "top";
     ctx.textAlign = "center";
 
+    // First pass: compute max width at requested font size
     ctx.font =
       `${rawFontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
 
@@ -321,7 +360,7 @@ function TeleprompterInner() {
 
     if (maxLineWidth > maxAllowedWidth && maxLineWidth > 0) {
       const ratio = maxAllowedWidth / maxLineWidth;
-      effectiveFontSize = Math.max(14, Math.floor(rawFontSize * ratio));
+      effectiveFontSize = Math.max(18, Math.floor(rawFontSize * ratio));
     }
 
     const lineGap = effectiveFontSize * settings.lineHeight;
@@ -332,6 +371,7 @@ function TeleprompterInner() {
     const centerY = height / 2;
     const startY = centerY - currentLineIndex * lineGap - lineGap / 2;
 
+    // frame
     ctx.strokeStyle = "rgba(148,163,184,.35)";
     ctx.lineWidth = 1;
     ctx.strokeRect(margin / 2, margin / 2, width - margin, height - margin);
@@ -357,14 +397,7 @@ function TeleprompterInner() {
 
     ctx.restore();
     rafRef.current = requestAnimationFrame(drawFrame);
-  }, [
-    lineMeta,
-    recState,
-    settings.wpm,
-    settings.fontSize,
-    settings.lineHeight,
-    settings.mirror,
-  ]);
+  }, [lineMeta, recState, settings.wpm, settings.fontSize, settings.lineHeight, settings.mirror]);
 
   useEffect(() => {
     if (!isBrowser) return;
@@ -385,8 +418,7 @@ function TeleprompterInner() {
     };
   }, [drawFrame, stopTracks]);
 
-  /* ========= Recording helpers ========= */
-
+  /* ========= Recording ========= */
   const stopMediaRecorder = useCallback(() => {
     if (mediaRecorderRef.current) {
       try {
@@ -396,34 +428,8 @@ function TeleprompterInner() {
       }
       mediaRecorderRef.current = null;
     }
-    // also stop camera preview
     stopTracks();
   }, [stopTracks]);
-
-  const logRecording = useCallback(
-    (label: string) => {
-      try {
-        if (typeof window !== "undefined") {
-          const raw = window.localStorage.getItem("tfm_video_history") || "[]";
-          const arr = JSON.parse(raw) as any[];
-          arr.push({
-            createdAt: new Date().toISOString(),
-            label,
-            script,
-          });
-          window.localStorage.setItem(
-            "tfm_video_history",
-            JSON.stringify(arr)
-          );
-        }
-      } catch {
-        // ignore
-      }
-    },
-    [script]
-  );
-
-  /* ========= Start / Pause / Stop ========= */
 
   const handleStart = useCallback(async () => {
     if (!isBrowser || recState === "recording") return;
@@ -482,8 +488,25 @@ function TeleprompterInner() {
         const url = URL.createObjectURL(blob);
         setDownloadUrl(url);
 
+        try {
+          if (typeof window !== "undefined") {
+            const raw =
+              window.localStorage.getItem("tfm_video_history") || "[]";
+            const arr = JSON.parse(raw) as any[];
+            arr.push({
+              createdAt: new Date().toISOString(),
+              script,
+            });
+            window.localStorage.setItem(
+              "tfm_video_history",
+              JSON.stringify(arr)
+            );
+          }
+        } catch {
+          // ignore
+        }
+
         setRecState("finished");
-        // ensure camera off after recording
         stopTracks();
       };
 
@@ -491,23 +514,25 @@ function TeleprompterInner() {
       mediaRecorderRef.current = mr;
       setRecState("recording");
     } catch (e: any) {
+      console.error(e);
       setTcError(e?.message || "Unable to start recording");
       stopMediaRecorder();
       setRecState("idle");
     }
-  }, [attachCamera, micId, recState, stopMediaRecorder, stopTracks]);
+  }, [attachCamera, micId, recState, script, stopMediaRecorder, stopTracks]);
 
   const handlePauseResume = useCallback(() => {
     if (!isBrowser) return;
-    if (!mediaRecorderRef.current) return;
+    const mr = mediaRecorderRef.current;
+    if (!mr) return;
 
-    if (recState === "recording") {
-      mediaRecorderRef.current.pause();
+    if (recState === "recording" && mr.state === "recording") {
+      mr.pause();
       setRecState("paused");
       lastPauseStartRef.current =
         typeof performance !== "undefined" ? performance.now() : Date.now();
-    } else if (recState === "paused") {
-      mediaRecorderRef.current.resume();
+    } else if (recState === "paused" && mr.state === "paused") {
+      mr.resume();
       setRecState("recording");
       if (lastPauseStartRef.current != null) {
         const now =
@@ -520,16 +545,24 @@ function TeleprompterInner() {
 
   const handleStop = useCallback(() => {
     if (!isBrowser) return;
-    if (!mediaRecorderRef.current) {
-      // still stop camera if user hits Stop when idle
+
+    // if never started, just ensure camera is off
+    if (recState === "idle") {
       stopTracks();
       return;
     }
+
+    if (!mediaRecorderRef.current) {
+      // nothing to stop, but still mark as finished so user can move on
+      stopTracks();
+      setRecState("finished");
+      return;
+    }
+
     stopMediaRecorder();
-  }, [stopMediaRecorder, stopTracks]);
+  }, [recState, stopMediaRecorder, stopTracks]);
 
   const handleResetRecording = useCallback(() => {
-    // stop any active recording first
     if (mediaRecorderRef.current) {
       try {
         mediaRecorderRef.current.stop();
@@ -539,10 +572,8 @@ function TeleprompterInner() {
       mediaRecorderRef.current = null;
     }
 
-    // stop camera
     stopTracks();
 
-    // clear download URL
     setDownloadUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return "";
@@ -550,7 +581,6 @@ function TeleprompterInner() {
 
     setTcError("");
 
-    // reset buffers / timing
     recordedBlobsRef.current = [];
     recordedBlobRef.current = null;
 
@@ -558,32 +588,8 @@ function TeleprompterInner() {
     pauseOffsetRef.current = 0;
     lastPauseStartRef.current = null;
 
-    // back to idle state
     setRecState("idle");
   }, [stopTracks]);
-
-  /* ========= Post-stop actions ========= */
-
-  const handleDownloadAndLog = useCallback(() => {
-    if (!downloadUrl) return;
-    const a = document.createElement("a");
-    a.href = downloadUrl;
-    a.download = "tfm-session.webm";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-
-    logRecording("Downloaded recording");
-  }, [downloadUrl, logRecording]);
-
-  const handleStoreOnly = useCallback(() => {
-    if (!recordedBlobRef.current) return;
-    logRecording("Stored recording");
-  }, [logRecording]);
-
-  const handleReRecord = useCallback(() => {
-    handleResetRecording();
-  }, [handleResetRecording]);
 
   /* ========= Auto-start ========= */
   useEffect(() => {
@@ -713,7 +719,9 @@ function TeleprompterInner() {
             marginBottom: 8,
           }}
         >
-          <div style={{ fontSize: 13, color: faint }}>Re-Enforce Alignment Stage</div>
+          <div style={{ fontSize: 13, color: faint }}>
+            Re-Enforce Alignment Stage
+          </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button
               type="button"
@@ -847,7 +855,7 @@ function TeleprompterInner() {
           )}
           {recState === "finished" && (
             <span style={{ fontSize: 12, color: teal }}>
-              Finished. Choose what to do with this recording.
+              Session finished. Review and log below.
             </span>
           )}
         </div>
@@ -864,8 +872,7 @@ function TeleprompterInner() {
           </div>
         )}
 
-        {/* Post-recording actions */}
-        {recState === "finished" && downloadUrl && (
+        {downloadUrl && (
           <div
             style={{
               marginTop: 10,
@@ -875,54 +882,120 @@ function TeleprompterInner() {
               alignItems: "center",
             }}
           >
-            <button
-              type="button"
-              onClick={handleDownloadAndLog}
+            <a
+              href={downloadUrl}
+              download="tfm-session.webm"
               style={{
                 padding: "6px 10px",
                 borderRadius: 999,
                 border: `1px solid ${border}`,
                 fontSize: 12,
                 color: baseText,
-                background: "transparent",
-                cursor: "pointer",
+                textDecoration: "none",
               }}
             >
-              Download &amp; Log
-            </button>
-            <button
-              type="button"
-              onClick={handleStoreOnly}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: `1px solid ${border}`,
-                fontSize: 12,
-                color: baseText,
-                background: "transparent",
-                cursor: "pointer",
-              }}
-            >
-              Log &amp; Store (History)
-            </button>
-            <button
-              type="button"
-              onClick={handleReRecord}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: `1px solid ${border}`,
-                fontSize: 12,
-                color: baseText,
-                background: "transparent",
-                cursor: "pointer",
-              }}
-            >
-              Re-Record
-            </button>
+              Download video
+            </a>
+            <span style={{ fontSize: 11, color: faint }}>
+              (Also saved to local video history)
+            </span>
           </div>
         )}
       </section>
+
+      {/* Completion card when session is finished */}
+      {recState === "finished" && (
+        <section
+          style={{
+            marginTop: 16,
+            background: panel,
+            borderRadius: 18,
+            border: `1px solid ${border}`,
+            padding: 12,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>
+              Session complete
+            </div>
+            <p
+              style={{
+                margin: "4px 0 0",
+                fontSize: 12,
+                color: faint,
+              }}
+            >
+              Your script has been logged to local video history. You can
+              download the recording, re-record, or head back to Today&apos;s
+              Future Me.
+            </p>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 8,
+              marginTop: 6,
+            }}
+          >
+            {downloadUrl && (
+              <a
+                href={downloadUrl}
+                download="tfm-session.webm"
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 999,
+                  border: `1px solid ${border}`,
+                  fontSize: 12,
+                  color: baseText,
+                  textDecoration: "none",
+                }}
+              >
+                Download &amp; keep video
+              </a>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                // script already logged in localStorage
+                router.push("/today");
+              }}
+              style={{
+                padding: "6px 12px",
+                borderRadius: 999,
+                border: `1px solid ${border}`,
+                background: "transparent",
+                color: baseText,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              Log &amp; close (back to Today)
+            </button>
+
+            <button
+              type="button"
+              onClick={handleResetRecording}
+              style={{
+                padding: "6px 12px",
+                borderRadius: 999,
+                border: `1px solid ${border}`,
+                background: "transparent",
+                color: baseText,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              Re-record session
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* Script + settings BELOW teleprompter, collapsible */}
       <section
@@ -945,7 +1018,7 @@ function TeleprompterInner() {
           }}
         >
           <div style={{ ...hudLabel, textTransform: "none", fontSize: 13 }}>
-            Script & Settings
+            Script &amp; Settings
           </div>
           <button
             type="button"
@@ -1060,14 +1133,14 @@ function TeleprompterInner() {
               </div>
               <input
                 type="range"
-                min={22}
-                max={44}
+                min={26}
+                max={52}
                 step={1}
                 value={settings.fontSize}
                 onChange={(e) =>
                   handleChangeSettings(
                     "fontSize",
-                    Number(e.target.value) || 32
+                    Number(e.target.value) || 40
                   )
                 }
                 style={sliderStyle}
@@ -1091,14 +1164,14 @@ function TeleprompterInner() {
               </div>
               <input
                 type="range"
-                min={120}
-                max={180}
+                min={125}
+                max={185}
                 step={5}
                 value={Math.round(settings.lineHeight * 100)}
                 onChange={(e) =>
                   handleChangeSettings(
                     "lineHeight",
-                    Number(e.target.value) / 100 || 1.4
+                    Number(e.target.value) / 100 || 1.45
                   )
                 }
                 style={sliderStyle}
