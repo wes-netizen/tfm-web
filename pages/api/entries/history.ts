@@ -20,12 +20,22 @@ export default async function handler(
       where: { userId },
       orderBy: { createdAt: "desc" },
       take: 100,
+      select: {
+        id: true,
+        createdAt: true,
+        script: true,
+        coachText: true,
+        quote: true,
+      },
     });
 
     return res.status(200).json({ entries });
   } catch (err: any) {
-    console.error("history error:", err);
-    return res.status(500).json({
+    console.error("History error:", err);
+
+    // Don’t throw a 500 at the UI – return empty list with error info
+    return res.status(200).json({
+      entries: [],
       error: "Failed to load history",
       detail: err?.message || String(err),
     });

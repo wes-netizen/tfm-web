@@ -1,6 +1,5 @@
 // pages/history.tsx
 import { useEffect, useState } from "react";
-import Link from "next/link";
 
 type Entry = {
   id: string;
@@ -19,8 +18,12 @@ export default function HistoryPage() {
     async function load() {
       try {
         const res = await fetch("/api/entries/history");
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
+
+        if (json.error) {
+          setError(json.error);
+        }
+
         setEntries(json.entries || []);
       } catch (e: any) {
         console.error(e);
@@ -42,27 +45,19 @@ export default function HistoryPage() {
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50 p-4 space-y-4">
-      <header className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">
-          Today&apos;s Future Me — History
-        </h1>
-        <Link
-          href="/today"
-          className="text-xs underline underline-offset-2 text-slate-300"
-        >
-          Back to Today
-        </Link>
-      </header>
+      <h1 className="text-xl font-semibold">
+        Today&apos;s Future Me — History
+      </h1>
 
       {error && (
-        <p className="text-sm text-rose-300">
+        <p className="text-xs text-rose-300">
           {error}
         </p>
       )}
 
       {entries.length === 0 && !error && (
-        <p className="text-sm text-slate-300">
-          No entries yet. Create one from the Today page.
+        <p className="text-sm text-slate-400">
+          No entries found yet. Complete a Today&apos;s Future Me session and log it to see it here.
         </p>
       )}
 
