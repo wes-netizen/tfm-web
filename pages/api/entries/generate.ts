@@ -274,6 +274,22 @@ GLOBAL STYLE:
 
     // --- Log this generated script into JournalEntry ---
     try {
+      const userId =
+        (req as any).user?.id ||
+        (req as any).session?.user?.id ||
+        "anonymous";
+
+      // Ensure a user row exists for this userId (prevents foreign key errors)
+      try {
+        await prisma.user.upsert({
+          where: { id: userId },
+          update: {},
+          create: { id: userId },
+        });
+      } catch (userErr) {
+        console.error("User upsert error (non-fatal, will still try to log entry):", userErr);
+      }
+
       const scriptLines = [
         out.coach || "",
         ...(out.csc || []),
@@ -298,6 +314,8 @@ GLOBAL STYLE:
       });
     } catch (logErr) {
       console.error("JournalEntry log error:", logErr);
+      // Optional: surface this if you want the client to know
+      // return res.status(500).json({ error: "Failed to save entry", detail: logErr?.message || String(logErr) });
     }
     // --- End logging ---
 
