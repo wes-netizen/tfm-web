@@ -281,254 +281,278 @@ function TeleprompterInner() {
     }
 
     // Teleprompter text
-    const margin = 40;
-    const rawFontSize = settings.fontSize;
-    const lineGapBase = rawFontSize * settings.lineHeight;
+const margin = 40;
 
-    ctx.textBaseline = "top";
-    ctx.textAlign = "center";
+// Safer defaults
+const requestedFontSize = settings.fontSize || 32;
+const minFontSize = 30;                       // <- clamp so it never gets tiny
+const lineHeight = settings.lineHeight ?? 1.35;
 
-    // First pass: compute max width at requested font size
-    ctx.font =
-      `${rawFontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+ctx.textBaseline = "top";
+ctx.textAlign = "center";
 
-    let maxLineWidth = 0;
-    for (const line of lines) {
-      const w = ctx.measureText(line).width;
-      if (w > maxLineWidth) maxLineWidth = w;
-    }
+// First pass: compute max width at requested font size
+ctx.font =
+  `${requestedFontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
 
-    const maxAllowedWidth = width - margin * 2;
-    let effectiveFontSize = rawFontSize;
+let maxLineWidth = 0;
+for (const line of lines) {
+  const w = ctx.measureText(line).width;
+  if (w > maxLineWidth) maxLineWidth = w;
+}
 
-    if (maxLineWidth > maxAllowedWidth && maxLineWidth > 0) {
-      const ratio = maxAllowedWidth / maxLineWidth;
-      effectiveFontSize = Math.max(14, Math.floor(rawFontSize * ratio));
-    }
+const maxAllowedWidth = width - margin * 2;
+let effectiveFontSize = requestedFontSize;
 
-    const lineGap = effectiveFontSize * settings.lineHeight;
-    ctx.font =
-      `${effectiveFontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+if (maxLineWidth > maxAllowedWidth && maxLineWidth > 0) {
+  const ratio = maxAllowedWidth / maxLineWidth;
+  effectiveFontSize = Math.floor(requestedFontSize * ratio);
+}
 
-    const centerX = width / 2;
-    const centerY = height / 2;
-    const startY = centerY - currentLineIndex * lineGap - lineGap / 2;
+// Never let it drop below a good mobile size
+effectiveFontSize = Math.max(minFontSize, effectiveFontSize);
 
-    // frame
-    ctx.strokeStyle = "rgba(148,163,184,.35)";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(margin / 2, margin / 2, width - margin, height - margin);
+const lineGap = effectiveFontSize * lineHeight;
 
-    for (let i = 0; i < lines.length; i++) {
-      const y = startY + i * lineGap;
-      if (y < margin || y > height - margin) continue;
+ctx.font =
+  `${effectiveFontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
 
-      const text = lines[i];
+const centerX = width / 2;
+const centerY = height / 2;
+const startY = centerY - currentLineIndex * lineGap - lineGap / 2;
 
-      if (i === currentLineIndex) {
-        ctx.fillStyle = accent;
-        ctx.globalAlpha = 0.18;
-        ctx.fillRect(margin / 2, y - 6, width - margin, lineGap + 12);
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = accent;
-      } else {
-        ctx.fillStyle = baseText;
-      }
+// frame
+ctx.strokeStyle = "rgba(148,163,184,.35)";
+ctx.lineWidth = 1;
+ctx.strokeRect(margin / 2, margin / 2, width - margin, height - margin);
 
-      ctx.fillText(text, centerX, y);
-    }
+for (let i = 0; i < lines.length; i++) {
+  const y = startY + i * lineGap;
+  if (y < margin || y > height - margin) continue;
 
-    ctx.restore();
-    rafRef.current = requestAnimationFrame(drawFrame);
-  }, [lineMeta, recState, settings.wpm, settings.fontSize, settings.lineHeight, settings.mirror]);
+  const text = lines[i];
 
-  useEffect(() => {
-    if (!isBrowser) return;
+  if (i === currentLineIndex) {
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = 0.18;
+    ctx.fillRect(margin / 2, y - 6, width - margin, lineGap + 12);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = accent;
+  } else {
+    ctx.fillStyle = baseText;
+  }
+
+  ctx.fillText(text, centerX, y);
+}
+
+ctx.restore();
+rafRef.current = requestAnimationFrame(drawFrame);
+}, [
+  lineMeta,
+  recState,
+  settings.wpm,
+  settings.fontSize,
+  settings.lineHeight,
+  settings.mirror,
+]);
+
+// Start / update the animation loop without killing camera/recorder on every state change
+useEffect(() => {
+  if (!isBrowser) return;
+  if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+  rafRef.current = requestAnimationFrame(drawFrame);
+  return () => {
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(drawFrame);
-    return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-      stopTracks();
-      if (mediaRecorderRef.current) {
-        try {
-          mediaRecorderRef.current.stop();
-        } catch {
-          // ignore
-        }
-        mediaRecorderRef.current = null;
+  };
+}, [drawFrame]);
+
+// Only on unmount: stop tracks and recorder
+useEffect(() => {
+  return () => {
+    stopTracks();
+    if (mediaRecorderRef.current) {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore
       }
-    };
-  }, [drawFrame, stopTracks]);
+      mediaRecorderRef.current = null;
+    }
+  };
+}, [stopTracks]);
 
   /* ========= Recording ========= */
-  const stopMediaRecorder = useCallback(() => {
-    if (mediaRecorderRef.current) {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch {
-        // ignore
-      }
-      mediaRecorderRef.current = null;
-    }
-    stopTracks();
-  }, [stopTracks]);
-
-  const handleStart = useCallback(async () => {
-    if (!isBrowser || recState === "recording") return;
-    setTcError("");
-    setSessionComplete(false);
-
-    // If MediaRecorder is not supported, just show message and bail.
-    if (typeof window !== "undefined" && !(window as any).MediaRecorder) {
-      setTcError(
-        "Recording is not supported in this browser. You can still read your script for alignment."
-      );
-      return;
-    }
-
+const stopMediaRecorder = useCallback(() => {
+  if (mediaRecorderRef.current) {
     try {
-      setDownloadUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return "";
-      });
-
-      recordedBlobsRef.current = [];
-      recordedBlobRef.current = null;
-      startTsRef.current = 0;
-      pauseOffsetRef.current = 0;
-      lastPauseStartRef.current = null;
-
-      const canvas = canvasRef.current;
-      if (!canvas) throw new Error("Canvas not ready");
-
-      // Turn camera on only when we start recording
-      await attachCamera();
-
-      const displayStream = canvas.captureStream(30);
-
-      // iOS-safe: don't use deviceId, just request default mic
-      const audioStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-      });
-
-      const fullStream = new MediaStream();
-      displayStream.getVideoTracks().forEach((t) => fullStream.addTrack(t));
-      audioStream.getAudioTracks().forEach((t) => fullStream.addTrack(t));
-
-      const options: MediaRecorderOptions = {
-        mimeType: "video/webm;codecs=vp9,opus",
-      };
-      const mr = new MediaRecorder(fullStream, options);
-
-      mr.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          recordedBlobsRef.current.push(event.data);
-        }
-      };
-
-      mr.onstop = () => {
-        fullStream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(recordedBlobsRef.current, {
-          type: "video/webm",
-        });
-        recordedBlobRef.current = blob;
-
-        const url = URL.createObjectURL(blob);
-        setDownloadUrl(url);
-
-        try {
-          if (typeof window !== "undefined") {
-            const raw =
-              window.localStorage.getItem("tfm_video_history") || "[]";
-            const arr = JSON.parse(raw) as any[];
-            arr.push({
-              createdAt: new Date().toISOString(),
-              script,
-            });
-            window.localStorage.setItem(
-              "tfm_video_history",
-              JSON.stringify(arr)
-            );
-          }
-        } catch {
-          // ignore
-        }
-
-        setRecState("finished");
-        setSessionComplete(true);
-        stopTracks();
-      };
-
-      mr.start(250);
-      mediaRecorderRef.current = mr;
-      setRecState("recording");
-    } catch (e: any) {
-      console.error(e);
-      setTcError(e?.message || "Unable to start recording");
-      stopMediaRecorder();
-      setRecState("idle");
+      mediaRecorderRef.current.stop();
+    } catch {
+      // ignore
     }
-  }, [attachCamera, recState, script, stopMediaRecorder, stopTracks]);
+    mediaRecorderRef.current = null;
+  }
+  stopTracks();
+}, [stopTracks]);
 
-  const handlePauseResume = useCallback(() => {
-    if (!isBrowser) return;
-    if (!mediaRecorderRef.current) return;
+const handleStart = useCallback(async () => {
+  if (!isBrowser || recState === "recording") return;
+  setTcError("");
+  setSessionComplete(false);
 
-    if (recState === "recording") {
-      mediaRecorderRef.current.pause();
-      setRecState("paused");
-      lastPauseStartRef.current =
-        typeof performance !== "undefined" ? performance.now() : Date.now();
-    } else if (recState === "paused") {
-      mediaRecorderRef.current.resume();
-      setRecState("recording");
-      if (lastPauseStartRef.current != null) {
-        const now =
-          typeof performance !== "undefined" ? performance.now() : Date.now();
-        pauseOffsetRef.current += now - lastPauseStartRef.current;
-        lastPauseStartRef.current = null;
-      }
-    }
-  }, [recState]);
+  // If MediaRecorder is not supported, just show message and bail.
+  if (typeof window !== "undefined" && !(window as any).MediaRecorder) {
+    setTcError(
+      "Recording is not supported in this browser. You can still read your script for alignment."
+    );
+    return;
+  }
 
-  const handleStop = useCallback(() => {
-    if (!isBrowser) return;
-    if (!mediaRecorderRef.current) {
-      stopTracks();
-      setRecState("finished");
-      setSessionComplete(true);
-      return;
-    }
-    stopMediaRecorder();
-    // onstop handler will set finished + sessionComplete
-  }, [stopMediaRecorder, stopTracks]);
-
-  const handleResetRecording = useCallback(() => {
-    if (mediaRecorderRef.current) {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch {
-        // ignore
-      }
-      mediaRecorderRef.current = null;
-    }
-
-    stopTracks();
-
+  try {
     setDownloadUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return "";
     });
 
-    setTcError("");
     recordedBlobsRef.current = [];
     recordedBlobRef.current = null;
     startTsRef.current = 0;
     pauseOffsetRef.current = 0;
     lastPauseStartRef.current = null;
-    setSessionComplete(false);
+
+    const canvas = canvasRef.current;
+    if (!canvas) throw new Error("Canvas not ready");
+
+    // Turn camera on only when we start recording
+    await attachCamera();
+
+    const displayStream = canvas.captureStream(30);
+
+    // iOS-safe: don't use deviceId, just request default mic
+    const audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+    });
+
+    const fullStream = new MediaStream();
+    displayStream.getVideoTracks().forEach((t) => fullStream.addTrack(t));
+    audioStream.getAudioTracks().forEach((t) => fullStream.addTrack(t));
+
+    const options: MediaRecorderOptions = {
+      mimeType: "video/webm;codecs=vp9,opus",
+    };
+    const mr = new MediaRecorder(fullStream, options);
+
+    mr.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        recordedBlobsRef.current.push(event.data);
+      }
+    };
+
+    mr.onstop = () => {
+      fullStream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(recordedBlobsRef.current, {
+        type: "video/webm",
+      });
+      recordedBlobRef.current = blob;
+
+      const url = URL.createObjectURL(blob);
+      setDownloadUrl(url);
+
+      try {
+        if (typeof window !== "undefined") {
+          const raw =
+            window.localStorage.getItem("tfm_video_history") || "[]";
+          const arr = JSON.parse(raw) as any[];
+          arr.push({
+            createdAt: new Date().toISOString(),
+            script,
+          });
+          window.localStorage.setItem(
+            "tfm_video_history",
+            JSON.stringify(arr)
+          );
+        }
+      } catch {
+        // ignore
+      }
+
+      setRecState("finished");
+      setSessionComplete(true);
+      stopTracks();
+    };
+
+    mr.start(250);
+    mediaRecorderRef.current = mr;
+    setRecState("recording");
+  } catch (e: any) {
+    console.error(e);
+    setTcError(e?.message || "Unable to start recording");
+    stopMediaRecorder();
     setRecState("idle");
-  }, [stopTracks]);
+  }
+}, [attachCamera, recState, script, stopMediaRecorder, stopTracks]);
+
+const handlePauseResume = useCallback(() => {
+  if (!isBrowser) return;
+  if (!mediaRecorderRef.current) return;
+
+  if (recState === "recording") {
+    mediaRecorderRef.current.pause();
+    setRecState("paused");
+    lastPauseStartRef.current =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+  } else if (recState === "paused") {
+    mediaRecorderRef.current.resume();
+    setRecState("recording");
+    if (lastPauseStartRef.current != null) {
+      const now =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+      pauseOffsetRef.current += now - lastPauseStartRef.current;
+      lastPauseStartRef.current = null;
+    }
+  }
+}, [recState]);
+
+const handleStop = useCallback(() => {
+  if (!isBrowser) return;
+
+  // If we never actually started recording, just clean up and stay idle
+  if (!mediaRecorderRef.current) {
+    stopTracks();
+    setRecState("idle");
+    setSessionComplete(false);
+    return;
+  }
+
+  // Normal stop path – onstop handler will set finished + sessionComplete
+  stopMediaRecorder();
+}, [stopMediaRecorder, stopTracks]);
+
+const handleResetRecording = useCallback(() => {
+  if (mediaRecorderRef.current) {
+    try {
+      mediaRecorderRef.current.stop();
+    } catch {
+      // ignore
+    }
+    mediaRecorderRef.current = null;
+  }
+
+  stopTracks();
+
+  setDownloadUrl((prev) => {
+    if (prev) URL.revokeObjectURL(prev);
+    return "";
+  });
+
+  setTcError("");
+  recordedBlobsRef.current = [];
+  recordedBlobRef.current = null;
+  startTsRef.current = 0;
+  pauseOffsetRef.current = 0;
+  lastPauseStartRef.current = null;
+  setSessionComplete(false);
+  setRecState("idle");
+}, [stopTracks]);
 
   /* ========= Completion actions ========= */
 

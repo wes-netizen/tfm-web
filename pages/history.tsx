@@ -1,5 +1,6 @@
 // pages/history.tsx
 import { useEffect, useState } from "react";
+import Link from "next/link";
 
 type Entry = {
   id: string;
@@ -50,6 +51,17 @@ export default function HistoryPage() {
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50 p-4 space-y-4">
+
+      {/* ← Back Button */}
+      <div>
+        <Link
+          href="/"
+          className="text-xs text-sky-400 hover:text-sky-300"
+        >
+          ← Back to Today
+        </Link>
+      </div>
+
       <h1 className="text-xl font-semibold">
         Today&apos;s Future Me — History
       </h1>
@@ -99,4 +111,3 @@ export default function HistoryPage() {
     </main>
   );
 }
-

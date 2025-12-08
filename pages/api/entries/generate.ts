@@ -29,6 +29,28 @@ type GenerateResponse = {
   bible?: { text: string; ref: string } | null;
 };
 
+// Extra system identity to make outputs more “GPT-like”
+const TFM_ALIGNMENT_SYSTEM = `
+You are the “Today’s Future Me” alignment coach.
+
+Your role:
+• Understand the user’s internal narrative.
+• Reflect their beliefs back with clarity and accuracy.
+• Strengthen self-belief through grounded, specific insight.
+• Push them forward with next-step action, not vague motivation.
+
+Tone:
+• Warm, direct, human, and non-therapeutic.
+• No clichés, no corporate language, no generic self-help.
+• Speak like a trusted mentor who knows them well.
+• Use short, sharp sentences. Vary rhythm. Be real.
+
+Constraints:
+• Use the recent entries to avoid repeating the same advice.
+• Make everything personal and situational to THIS user and THIS day.
+• Do not add extra fields beyond the requested JSON.
+`;
+
 // Helper to hard-limit text to a max number of words
 function trimToMaxWords(text: string | undefined, maxWords: number): string {
   if (!text) return "";
@@ -67,19 +89,63 @@ export default async function handler(
 
   const mode = body.mode || "momentum";
 
-  const bibleInstruction = includeBible
-    ? `The user has requested a Bible verse. You MUST fill "bible" with a short verse and reference that clearly supports today's CSC, gratitude, actions, and prayers.`
-    : `The user did not specifically request a Bible verse. You may set "bible" to null, or choose a short verse and reference that gently supports today's themes.`;
+  // Same anonymous / userId pattern you already use
+  const userId =
+    (req as any).user?.id ||
+    (req as any).session?.user?.id ||
+    "anonymous";
 
-  const prompt = `
+  try {
+    // ---- Recent entries for context / anti-repetition ----
+    const recentEntries = await prisma.journalEntry.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: {
+        createdAt: true,
+        script: true,
+        coachText: true,
+        quote: true,
+      },
+    });
+
+    const recentBlock =
+      recentEntries.length === 0
+        ? "No prior entries."
+        : recentEntries
+            .map((e) => {
+              const date = e.createdAt.toISOString();
+              return `- [${date}]
+  script: ${e.script || ""}
+  coach: ${e.coachText || ""}
+  quote: ${e.quote || ""}`;
+            })
+            .join("\n");
+
+    const bibleInstruction = includeBible
+      ? `The user has requested a Bible verse. You MUST fill "bible" with a short verse and reference that clearly supports today's CSC, gratitude, actions, and prayers.`
+      : `The user did not specifically request a Bible verse. You may set "bible" to null, or choose a short verse and reference that gently supports today's themes.`;
+
+    // ------------------ Main prompt ------------------
+    const prompt = `
 You are helping a user of the "Today's Future Me" app create a short, clear daily script.
 
 The entry below is their full journaling for today. It may include sections like FOCUS, BLOCKING, WINS / BUILDING, ACTIONS, and PRAYERS. Treat it as the single source of truth for what matters today.
 
-User's entry:
+Today's entry:
 """
 ${entry}
 """
+
+Recent entries for this same user (to avoid repeating yourself):
+"""
+${recentBlock}
+"""
+
+Your job is to build a fresh script that:
+- Feels new (not a reworded version of prior days),
+- Speaks directly to where they are today,
+- Reinforces their identity, gratitude, actions, and prayer.
 
 Write **JSON only** (no backticks) with this exact shape:
 
@@ -104,6 +170,7 @@ DETAILED RULES (very important):
 - Total length 8–12 words.
 - Speak directly to the user and what they wrote today.
 - End with a clear, forward-moving idea (no fluff).
+- Do NOT simply restate what prior coaches already said in the recent entries.
 
 2) CSC ("csc")
 - EXACTLY 3 lines.
@@ -147,18 +214,16 @@ DETAILED RULES (very important):
 GLOBAL STYLE:
 - Aim for a 4th–5th grade reading level for CSC, gratitude, actions, and prayers. The quote and Bible verse may be slightly more advanced.
 - Keep language short, concrete, and specific to THIS user and THIS day.
-
-Remember: output **must** be valid JSON that exactly matches the structure above. Do not add any extra fields or comments.
+- Use the recent entries ONLY as context — do not copy them.
 `;
 
-  try {
     const completion = await client.chat.completions.create({
       model: "gpt-5.1",
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
-          content: TFM_CSC_COACH_PROMPT,
+          content: `${TFM_CSC_COACH_PROMPT}\n\n${TFM_ALIGNMENT_SYSTEM}`,
         },
         {
           role: "user",
@@ -209,11 +274,6 @@ Remember: output **must** be valid JSON that exactly matches the structure above
 
     // --- Log this generated script into JournalEntry ---
     try {
-      const userId =
-        (req as any).user?.id ||
-        (req as any).session?.user?.id ||
-        "anonymous";
-
       const scriptLines = [
         out.coach || "",
         ...(out.csc || []),
