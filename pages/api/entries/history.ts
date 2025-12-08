@@ -11,14 +11,9 @@ export default async function handler(
   }
 
   try {
-    // You don’t have auth wired yet – this matches generate.ts
-    const userId =
-      (req as any).user?.id ||
-      (req as any).session?.user?.id ||
-      "anonymous";
-
+    // TEMP for beta: return ALL journal entries, newest first.
+    // This ignores userId so we can confirm entries are being logged.
     const entries = await prisma.journalEntry.findMany({
-      where: { userId },
       orderBy: { createdAt: "desc" },
       take: 100,
       select: {
@@ -27,18 +22,20 @@ export default async function handler(
         script: true,
         coachText: true,
         quote: true,
+        // optional: see which user they belong to
+        userId: true,
+        source: true,
       },
     });
 
     return res.status(200).json({ entries });
   } catch (err: any) {
     console.error("History error:", err);
-
-    // IMPORTANT: no HTTP 500 to the browser – just an empty list plus detail
-    return res.status(200).json({
+    return res.status(500).json({
       entries: [],
       error: "Failed to load history",
       detail: err?.message || String(err),
     });
   }
 }
+
