@@ -14,6 +14,17 @@ type GenerateBody = {
   ageBucket?: string;
   mode?: string;
   includeBible?: boolean;
+
+  // NEW: which parts the user chose to include in the final script
+  selections?: {
+    coach?: boolean;
+    csc?: boolean;
+    gratefulList?: boolean;
+    actionGuide?: boolean;
+    prayerList?: boolean;
+    quote?: boolean;
+    bibleVerse?: boolean; // just controls whether verse text is appended to scriptLines
+  };
 };
 
 type GenerateResponse = {
@@ -290,15 +301,49 @@ GLOBAL STYLE:
         console.error("User upsert error (non-fatal, will still try to log entry):", userErr);
       }
 
-      const scriptLines = [
-        out.coach || "",
-        ...(out.csc || []),
-        ...(out.gratefulList || []),
-        ...(out.actionGuide || []),
-        ...(out.prayerList || []),
-        out.quote || "",
-        out.bible?.text ? `${out.bible.text} — ${out.bible.ref || ""}` : "",
-      ].filter(Boolean) as string[];
+      const selections = body.selections || {};
+
+const scriptLines: string[] = [];
+
+// Only push what the user selected
+if (selections.coach) {
+  if (out.coach) scriptLines.push(out.coach);
+}
+
+if (selections.csc) {
+  if (out.csc && out.csc.length > 0) scriptLines.push(...out.csc);
+}
+
+if (selections.gratefulList) {
+  if (out.gratefulList && out.gratefulList.length > 0) {
+    scriptLines.push(...out.gratefulList);
+  }
+}
+
+if (selections.actionGuide) {
+  if (out.actionGuide && out.actionGuide.length > 0) {
+    scriptLines.push(...out.actionGuide);
+  }
+}
+
+if (selections.prayerList) {
+  if (out.prayerList && out.prayerList.length > 0) {
+    scriptLines.push(...out.prayerList);
+  }
+}
+
+if (selections.quote) {
+  if (out.quote) scriptLines.push(out.quote);
+}
+
+if (selections.bibleVerse) {
+  if (out.bible?.text) {
+    scriptLines.push(
+      out.bible.ref ? `${out.bible.text} — ${out.bible.ref}` : out.bible.text
+    );
+  }
+}
+
 
       await prisma.journalEntry.create({
         data: {
